@@ -17,7 +17,7 @@ Numerical optimization of aquaculture production cycles under seasonal mortality
 ## Language and Tooling
 
 - **Optimization and simulation**: Julia. All model code, solvers, and simulation scripts must be Julia.
-- **Visualization**: R using `ggplot2` and `tidyr`. No Julia or Python plotting.
+- **Visualization**: R using `ggplot2` and `tidyr`. No Julia or Python plotting. Use the classic ggplot these `theme_classic()` and use a `base_size=20` and increase the line width of `width=1.5`.
 - **Data exchange**: Export all model solutions and simulation results as `.csv` files.
 - **Figures**: Save as PNG with `dpi = 400`. Use `ggsave(..., dpi = 400)` in R scripts.
 

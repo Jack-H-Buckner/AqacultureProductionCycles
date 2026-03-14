@@ -152,16 +152,42 @@ function solve_numbers(t₀, T, n₀, p)
 end
 
 """
-    f_value(L, p)
+    W_weight(L, p)
 
-Allometric value per individual fish:  f(L) = α · L^β.
+Allometric weight-length relationship:  W(L) = ω · L^β.
 
 # Arguments
-- `L` : mean body length
-- `p` : parameter set (must contain `p.α` and `p.β`)
+- `L` : mean body length (cm)
+- `p` : parameter set (must contain `p.ω` and `p.β`)
+"""
+W_weight(L, p) = p.ω * L^p.β
+
+"""
+    f_value(L, p)
+
+Value per individual fish as a function of body length, using a sigmoid
+price-per-gram that rises from near zero for small fish to near 1 for
+large fish:
+
+  W = ω · L^β                             (allometric weight)
+  σ = 1 / (1 + exp(−(W − W₅₀) / s))      (sigmoid price factor)
+  f = W · σ
+
+The two parameters `W₅₀` (midpoint weight) and `s` (scale) control where
+and how steeply the per-gram price increases.
+
+# Arguments
+- `L` : mean body length (cm)
+- `p` : parameter set containing:
+  - `ω`   : weight-length scalar
+  - `β`   : weight-length exponent (typically ≈ 3)
+  - `W₅₀` : sigmoid midpoint weight (g) — price is 0.5 per g at this weight
+  - `s`   : sigmoid scale parameter (g) — controls steepness
 """
 function f_value(L, p)
-    return p.α * L^p.β
+    W = W_weight(L, p)
+    σ = 1.0 / (1.0 + exp(-(W - p.W₅₀) / p.s))
+    return W * σ
 end
 
 """

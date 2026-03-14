@@ -174,6 +174,81 @@ I'(t) = (λ(t)/(1−Q) + δ_b)·I(t) + φ(t) + c_I/(1−Q) − δ_b·(c₂ + Y_M
 I(t₀) = Y_MIN + c_s + c₂
 ```
 
+### Validation Against the Reed (1984) Analytical Solution
+
+When seasonality is removed (λ(t) = λ, a constant), the model admits a closed-form objective function using results from Reed (1984). This provides an analytical benchmark against which the numerical solver can be validated before it is applied to the full seasonal problem.
+
+#### Objective Function Under Constant Hazard (Reed's Framework)
+
+Without seasonality, cycles repeat identically and the continuation value V is a constant. Following Reed (1984, equations 11–12), the objective function for an infinite sequence of identical rotations can be written as a ratio of expected single-cycle value to a normalizing term:
+
+```
+J = V(T) = E[e^{−δX} · u(Y)] / (1 − E[e^{−δX}])
+```
+
+where X is the (random) duration of a rotation — either the planned harvest time T or the time τ of a loss event, whichever comes first — and Y is the corresponding income (Y_H(T) if the cycle reaches harvest, Y_L(τ) if a loss occurs).
+
+For a homogeneous Poisson process with constant hazard λ, Reed (1984) gives the discount factor expectation as:
+
+```
+E[e^{−δX}] = (λ + δ·e^{−(λ+δ)T}) / (λ + δ)
+```
+
+The expected discounted utility of a single rotation combines the survival and loss branches:
+
+```
+E[e^{−δX}·u(Y)] = ∫[0 to T] λ·e^{−(δ+λ)s}·u(Y_L(s)) ds  +  e^{−(δ+λ)T}·u(Y_H(T))
+```
+
+Substituting both into the ratio gives the full analytical objective:
+
+```
+V(T) = (λ + δ) · (∫[0 to T] λ·e^{−(δ+λ)s}·u(Y_L(s)) ds  +  e^{−(δ+λ)T}·u(Y_H(T)))
+        / (δ · (1 − e^{−(λ+δ)T}))
+```
+
+#### Deriving the First-Order Conditions
+
+The optimal rotation length T* is found by differentiating V(T) with respect to T. Writing V = N(T)/D(T), the quotient rule gives dV/dT = (N'D − ND') / D² = 0, so it suffices to solve N'D − ND' = 0. After expanding and simplifying, and assuming for tractability that loss income Y_L is a constant Y_MIN (corresponding to breakeven insurance coverage), the loss-branch terms cancel. This yields the FOC in terms of harvest income only:
+
+```
+Y_H'(T) · u'(Y_H(T)) = (δ + λ) · u(Y_H(T)) / (1 − e^{−(λ+δ)T})
+```
+
+The left side is the marginal utility gain from an additional unit of growing time. The right side is the opportunity cost: the utility from harvest, scaled by the augmented discount rate (δ + λ) and a Faustmann-style infinite-rotation factor.
+
+#### Recovering the Classical Reed Result
+
+Setting insurance, stocking, and feed costs to zero (so Y_H(T) = v(T) − c_h) and using linear utility u(x) = x (risk neutrality), the FOC reduces to Reed's modified Faustmann formula:
+
+```
+v'(T*) = (δ + λ) · v(T*) / (1 − e^{−(λ+δ)T*})
+```
+
+This is the classical result in which the hazard rate λ enters as a direct addition to the discount rate δ. The formula can be solved for T* using a standard root finder given any concave growth function v(·).
+
+#### Numerical Validation Procedure
+
+To validate the solver against this analytical benchmark:
+
+1. **Configure the constant-hazard case**: Set λ(t) = λ for all t, set η = 0 (no feed costs), disable insurance (I = 0, π = 0), use linear utility u(x) = x, and force immediate restocking (no fallow).
+2. **Solve analytically**: For a given growth function v(·) and parameter values (λ, δ, c_h), solve the modified Faustmann formula for T* using a root finder. Compute V analytically from the closed-form objective.
+3. **Run the numerical solver**: Initialize the Fourier representation and iterate the coupled system (harvest FOC, stocking FOC, value linkage, value function) until convergence.
+4. **Compare**: The numerical T*(t₀) should be constant across all stocking dates (no seasonal variation), matching the analytical T* to within solver tolerance. The numerical V(t) should likewise be constant and match the analytical V. All non-constant Fourier coefficients (sine and cosine harmonics) should be negligibly small.
+
+#### What This Test Checks
+
+This validation exercises several components of the numerical machinery simultaneously: the iterative convergence scheme, the Fourier representation (which should collapse to a constant), the evaluation of the survival function and cost integrals, and the coupled system of FOCs and value equations. Discrepancies indicate bugs in the integration routines, FOC evaluation, or iteration logic, and should be diagnosed before proceeding to the seasonal case.
+
+#### Intermediate Benchmarks
+
+Between the pure Reed baseline and the full seasonal model, additional constant-hazard tests can isolate individual extensions:
+
+1. **Constant Y_L with risk aversion** (concave u, λ constant): The analytical FOC Y_H'(T)·u'(Y_H) = (δ+λ)·u(Y_H)/(1−e^{−(λ+δ)T}) still applies when loss income is constant. This tests the utility function and risk-aversion terms without seasonal complexity.
+2. **Add feed costs** (η > 0, λ constant): Feed costs raise the effective discount rate, shortening the optimal rotation. With constant hazard the value function and FOC can still be evaluated semi-analytically.
+3. **Add insurance** (constant λ, breakeven coverage): The insurance ODE has constant coefficients under constant hazard, so the indemnity trajectory I(t) can be solved in closed form, providing another checkable quantity.
+4. **Introduce seasonality** (λ(t) periodic): Only after all constant-hazard tests pass should seasonal variation be introduced, at which point no closed-form benchmark exists and the solver must be assessed by convergence diagnostics and sensitivity analysis.
+
 ## References
 
 - Reed, W. J. (1984). The effects of the risk of fire on the optimal rotation of a forest. *Journal of Environmental Economics and Management*, 11, 180–190.
