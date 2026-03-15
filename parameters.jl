@@ -47,7 +47,7 @@ const ω = 0.01          # weight-length scalar
 const β = 3.0           # weight-length exponent (≈ cubic)
 
 # ── Value function  f = W · sigmoid((W − W₅₀) / s) ──────────────────────────
-const W₅₀ = 500.0        # sigmoid midpoint weight (g) — price is 0.5/g here
+const W₅₀ = 600.0        # sigmoid midpoint weight (g) — price is 0.5/g here
 const s   = 100.0         # sigmoid scale parameter (g) — controls steepness
 
 # ── Cost structure ────────────────────────────────────────────────────────────

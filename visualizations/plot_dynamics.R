@@ -5,7 +5,7 @@ library(tidyr)
 growth <- read.csv("results/simulations/growth_dynamics.csv")
 costs  <- read.csv("results/simulations/cost_dynamics.csv")
 
-T_star <- 273.9  # from solver output
+T_star <- 297.2  # from solver output
 
 # ── Figure 1: Growth dynamics (4-panel) ──────────────────────────────────────
 
