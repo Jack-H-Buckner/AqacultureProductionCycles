@@ -322,6 +322,59 @@ function compute_Vtilde(t₀, T_star, V_coeffs, p)
 end
 
 """
+    compute_Vtilde_decomposed(t₀, T_star, p)
+
+Decompose the cycle value into a utility-only component `f` and a
+discount factor `g`, such that Ṽ(t₀) = f + g·V̄ when V(t) ≈ V̄ (constant):
+
+  f = S(T*,t₀)·e^{−δτ}·u(Y_H) + ∫ S·λ·e^{−δ·…}·u(Y_L) ds
+  g = S(T*,t₀)·e^{−δτ}        + ∫ S·λ·e^{−δ·…} ds
+
+This decomposition enables a direct solve for V at each node:
+  V(t) = e^{−δd*}·f / (1 − e^{−δd*}·g)
+which converges in one step for the homogeneous case and dramatically
+accelerates convergence for the seasonal case.
+
+# Returns
+`(f, g)` — the utility-only part and the expected discount factor.
+"""
+function compute_Vtilde_decomposed(t₀, T_star, p)
+    cycle = prepare_cycle(t₀, T_star, p)
+
+    # Harvest branch
+    yh = Y_H_seasonal(T_star, t₀, cycle.L_sol, cycle.n_sol, cycle.I_sol, p)
+    surv_T = S(t₀, T_star, p)
+    disc_T = exp(-p.δ * (T_star - t₀))
+
+    f_harvest = surv_T * disc_T * u(max(yh, 1e-10), p)
+    g_harvest = surv_T * disc_T
+
+    # Loss branch: separate utility and discount factor integrals
+    function f_integrand(s)
+        surv_s = S(t₀, s, p)
+        λ_s = λ(s, p)
+        disc_s = exp(-p.δ * (s - t₀))
+        yl = Y_L_seasonal(s, t₀, cycle.L_sol, cycle.n_sol, cycle.I_sol, p)
+        return surv_s * λ_s * disc_s * u(max(yl, 1e-10), p)
+    end
+
+    function g_integrand(s)
+        surv_s = S(t₀, s, p)
+        λ_s = λ(s, p)
+        disc_s = exp(-p.δ * (s - t₀))
+        return surv_s * λ_s * disc_s
+    end
+
+    f_loss, _ = quadgk(f_integrand, t₀ + 1e-6, T_star; rtol=1e-6)
+    g_loss, _ = quadgk(g_integrand, t₀ + 1e-6, T_star; rtol=1e-6)
+
+    f = f_harvest + f_loss
+    g = g_harvest + g_loss
+
+    return (f = f, g = g)
+end
+
+"""
     compute_Vtilde_deriv(t₀, T_star_coeffs, V_coeffs, p; h=0.1)
 
 Numerical derivative dṼ/dt₀ via central finite differences.
