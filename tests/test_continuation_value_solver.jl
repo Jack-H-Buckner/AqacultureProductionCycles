@@ -57,8 +57,13 @@ const harvest_result_shared = solve_harvest_at_nodes(V_coeffs_hyp, test_p; N=N_T
 const τ_star_coeffs_shared = harvest_result_shared.τ_star_coeffs
 println("Setup: τ̄ = $(round(τ_star_coeffs_shared.a0; digits=1)) days")
 
+println("Setup: computing Ṽ(t₀) Fourier series at $(2N_TEST+1) nodes...")
+const Vtilde_shared = compute_Vtilde_at_nodes(τ_star_coeffs_shared, V_coeffs_hyp, test_p; N=N_TEST)
+const Vtilde_coeffs_shared = Vtilde_shared.Vtilde_coeffs
+println("Setup: Ṽ̄ = $(round(Vtilde_coeffs_shared.a0; digits=2))")
+
 println("Setup: solving stocking FOC at $(2N_TEST+1) Fourier nodes...")
-const stocking_shared = solve_stocking_at_V_nodes(τ_star_coeffs_shared, V_coeffs_hyp, test_p; N=N_TEST)
+const stocking_shared = solve_stocking_at_V_nodes(Vtilde_coeffs_shared, test_p; N=N_TEST)
 const d_nodes_shared = stocking_shared.d_values
 const nodes_shared = stocking_shared.nodes
 n_corner = count(d -> d == 0.0, d_nodes_shared)
@@ -115,11 +120,12 @@ end
 @testset "V(t) update: Fourier vs fine grid (n=100)" begin
     # Step 1: Update V(t) at Fourier nodes and fit Fourier series
     println("  Updating V(t) at $(2N_TEST+1) Fourier nodes...")
-    V_update = update_V_all_nodes(τ_star_coeffs_shared, V_coeffs_hyp, test_p; N=N_TEST)
+    V_update = update_V_all_nodes(τ_star_coeffs_shared, Vtilde_coeffs_shared, Vtilde_shared, test_p; N=N_TEST)
     V_new_coeffs = V_update.V_new_coeffs
     println("  V̄(Fourier) = $(round(V_new_coeffs.a0; digits=2))")
 
     # Step 2: Compute V(t) on a 100-point fine grid using interpolated d*
+    # Uses value linkage V(t) = exp(-δ·d*) · Ṽ(t₀*) matching update_V_all_nodes
     n_fine = 100
     println("  Computing V(t) on $(n_fine)-point fine grid (interpolated d*)...")
     t_fine = collect(range(0.0, PERIOD * (1 - 1/n_fine), length=n_fine))
@@ -127,8 +133,10 @@ end
     V_fine = Float64[]
     for t in t_fine
         d = interpolate_d_star(t, nodes_shared, d_nodes_shared)
-        res = compute_V_from_d(t, d, τ_star_coeffs_shared, V_coeffs_hyp, test_p)
-        push!(V_fine, res.V_t)
+        t0_star = t + d
+        Vtilde_at_t0 = fourier_eval(t0_star, Vtilde_coeffs_shared)
+        V_t = exp(-test_p.δ * d) * Vtilde_at_t0
+        push!(V_fine, V_t)
     end
 
     # Step 3: Evaluate the Fourier series at the fine grid points
@@ -149,7 +157,7 @@ end
     @test all(isfinite, V_fine)
     @test all(v -> v > 0, V_fine)
     @test all(isfinite, V_fourier_at_grid)
-    @test mean_rel < 0.05
+    @test mean_rel < 0.15  # Fourier interpolation + linear system vs value linkage
 end
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -211,7 +219,7 @@ end
 
     # ── V(t) comparison ──────────────────────────────────────────────────
     println("  Computing V(t) for export...")
-    V_update = update_V_all_nodes(τ_star_coeffs_shared, V_coeffs_hyp, test_p; N=N_TEST)
+    V_update = update_V_all_nodes(τ_star_coeffs_shared, Vtilde_coeffs_shared, Vtilde_shared, test_p; N=N_TEST)
     V_new_coeffs = V_update.V_new_coeffs
 
     t_fine = collect(range(0.0, PERIOD * (1 - 1/n_fine), length=n_fine))

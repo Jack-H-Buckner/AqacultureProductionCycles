@@ -110,6 +110,18 @@ Survival probability from time `t` to `T`:  S(t,T) = exp(−m(t,T)).
 """
 S(t, T, p) = exp(-cumulative_hazard(t, T, p))
 
+"""
+    solve_cumulative_hazard(t₀, T, p)
+
+Solve the cumulative hazard ODE  Λ'(t) = λ(t), Λ(t₀) = 0.
+Enables O(1) survival lookups: S(t₀, s) = exp(−Λ(s)) for any s ∈ [t₀, T].
+"""
+function solve_cumulative_hazard(t₀, T, p)
+    dΛdt(Λ, params, t) = λ(t, params)
+    prob = ODEProblem(dΛdt, 0.0, (t₀, T), p)
+    return solve(prob, Tsit5(); reltol=1e-8, abstol=1e-10)
+end
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 3. Growth and stock value
@@ -214,10 +226,11 @@ end
 """
     φ(t, t₀, L_sol, n_sol, p)
 
-Instantaneous feed cost rate:  φ(t) = η · v(t, t₀).
+Instantaneous feed cost rate:  φ(t) = η · n(t) · W(L(t)).
+Feed costs are proportional to total biomass (numbers × weight per fish).
 See README § "Cost Structure".
 """
-φ(t, t₀, L_sol, n_sol, p) = p.η * v(t, t₀, L_sol, n_sol, p)
+φ(t, t₀, L_sol, n_sol, p) = p.η * n_sol(t) * W_weight(L_sol(t), p)
 
 """
     Φ_accumulated(T, t₀, L_sol, n_sol, p)
@@ -232,6 +245,21 @@ function Φ_accumulated(T, t₀, L_sol, n_sol, p)
 end
 
 """
+    solve_accumulated_feed(t₀, T, L_sol, n_sol, p)
+
+Solve the accumulated feed cost ODE  Φ'(t) = φ(t) + δ_b·Φ(t), Φ(t₀) = 0,
+where φ(t) = η·n(t)·W(L(t)). The solution Φ_sol(s) equals the quadgk-based
+`Φ_accumulated(s, t₀, ...)` but is O(1) to evaluate at any s ∈ [t₀, T].
+"""
+function solve_accumulated_feed(t₀, T, L_sol, n_sol, p)
+    function dΦdt(Φ, params, t)
+        return params.η * n_sol(t) * W_weight(L_sol(t), params) + params.δ_b * Φ
+    end
+    prob = ODEProblem(dΦdt, 0.0, (t₀, T), p)
+    return solve(prob, Tsit5(); reltol=1e-8, abstol=1e-10)
+end
+
+"""
     Π_accumulated(T, t₀, I_sol, p)
 
 Accumulated insurance premiums compounded to time `T` at borrowing rate δ_b:
@@ -243,6 +271,22 @@ function Π_accumulated(T, t₀, I_sol, p)
     integrand(s) = π_premium(s, I_sol, p) * exp(p.δ_b * (T - s))
     val, _ = quadgk(integrand, t₀, T)
     return val
+end
+
+"""
+    solve_accumulated_premium(t₀, T, I_sol, p)
+
+Solve the accumulated premium ODE  Π'(t) = π(t) + δ_b·Π(t), Π(t₀) = 0.
+The solution Π_sol(s) equals the quadgk-based `Π_accumulated(s, t₀, ...)`
+but is O(1) to evaluate at any s ∈ [t₀, T].
+"""
+function solve_accumulated_premium(t₀, T, I_sol, p)
+    function dΠdt(Π, params, t)
+        π_t = (λ(t, params) * I_sol(t) + params.c_I) / (1 - params.Q)
+        return π_t + params.δ_b * Π
+    end
+    prob = ODEProblem(dΠdt, 0.0, (t₀, T), p)
+    return solve(prob, Tsit5(); reltol=1e-8, abstol=1e-10)
 end
 
 """

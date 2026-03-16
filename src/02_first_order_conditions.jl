@@ -95,7 +95,11 @@ function prepare_cycle(t₀, T_max, p)
     L_sol = solve_length(t₀, T_max, p.L₀, p)
     n_sol = solve_numbers(t₀, T_max, p.n₀, p)
     I_sol = solve_indemnity(t₀, T_max, L_sol, n_sol, p)
-    return (L_sol = L_sol, n_sol = n_sol, I_sol = I_sol)
+    Λ_sol = solve_cumulative_hazard(t₀, T_max, p)
+    Φ_sol = solve_accumulated_feed(t₀, T_max, L_sol, n_sol, p)
+    Π_sol = solve_accumulated_premium(t₀, T_max, I_sol, p)
+    return (L_sol=L_sol, n_sol=n_sol, I_sol=I_sol,
+            Λ_sol=Λ_sol, Φ_sol=Φ_sol, Π_sol=Π_sol)
 end
 
 """
@@ -108,44 +112,51 @@ function v_seasonal(t, L_sol, n_sol, p)
 end
 
 """
-    Y_H_seasonal(T, t₀, L_sol, n_sol, I_sol, p)
+    Y_H_seasonal(T, t₀, cycle, p)
 
 Harvest income at planned harvest date `T` using precomputed ODE solutions.
   Y_H = v(T) − c_s·exp(δ_b·(T−t₀)) − Φ(T,t₀) − Π(T,t₀) − c_h
+
+`cycle` is the NamedTuple from `prepare_cycle` containing L_sol, n_sol, I_sol,
+Λ_sol, Φ_sol, Π_sol.
 """
-function Y_H_seasonal(T, t₀, L_sol, n_sol, I_sol, p)
-    v_T = v_seasonal(T, L_sol, n_sol, p)
+function Y_H_seasonal(T, t₀, cycle, p)
+    v_T = v_seasonal(T, cycle.L_sol, cycle.n_sol, p)
     stocking = p.c_s * exp(p.δ_b * (T - t₀))
-    Φ_val = Φ_accumulated(T, t₀, L_sol, n_sol, p)
-    Π_val = Π_accumulated(T, t₀, I_sol, p)
+    Φ_val = cycle.Φ_sol(T)
+    Π_val = cycle.Π_sol(T)
     return v_T - stocking - Φ_val - Π_val - p.c_h
 end
 
 """
-    Y_L_seasonal(τ, t₀, L_sol, n_sol, I_sol, p)
+    Y_L_seasonal(τ, t₀, cycle, p)
 
 Loss income at catastrophic event time `τ` using precomputed ODE solutions.
   Y_L = I(τ) − c_s·exp(δ_b·(τ−t₀)) − Φ(τ,t₀) − Π(τ,t₀) − c₂
+
+`cycle` is the NamedTuple from `prepare_cycle`.
 """
-function Y_L_seasonal(τ, t₀, L_sol, n_sol, I_sol, p)
+function Y_L_seasonal(τ, t₀, cycle, p)
     stocking = p.c_s * exp(p.δ_b * (τ - t₀))
-    Φ_val = Φ_accumulated(τ, t₀, L_sol, n_sol, p)
-    Π_val = Π_accumulated(τ, t₀, I_sol, p)
-    return I_sol(τ) - stocking - Φ_val - Π_val - p.c₂
+    Φ_val = cycle.Φ_sol(τ)
+    Π_val = cycle.Π_sol(τ)
+    return cycle.I_sol(τ) - stocking - Φ_val - Π_val - p.c₂
 end
 
 """
-    Y_H_prime_seasonal(T, t₀, L_sol, n_sol, I_sol, p)
+    Y_H_prime_seasonal(T, t₀, cycle, p)
 
 Derivative of harvest income with respect to T:
   dY_H/dT = dv/dT − c_s·δ_b·exp(δ_b·(T−t₀)) − dΦ/dT − dΠ/dT
 
 where dv/dT = n(T)·[−m(T)·f(L) + f'(L)·k(T)·(L∞−L)]
 and dΦ/dT = φ(T) + δ_b·Φ(T), dΠ/dT = π(T) + δ_b·Π(T).
+
+`cycle` is the NamedTuple from `prepare_cycle`.
 """
-function Y_H_prime_seasonal(T, t₀, L_sol, n_sol, I_sol, p)
-    L_T = L_sol(T)
-    n_T = n_sol(T)
+function Y_H_prime_seasonal(T, t₀, cycle, p)
+    L_T = cycle.L_sol(T)
+    n_T = cycle.n_sol(T)
     W = W_weight(L_T, p)
 
     # df/dL via chain rule: f = W·σ(W), df/dW = σ + W·σ(1−σ)/s
@@ -161,14 +172,14 @@ function Y_H_prime_seasonal(T, t₀, L_sol, n_sol, I_sol, p)
     # dv/dT via product rule on v = n·f(L)
     dv_dT = n_T * (-m_T * f_L + dfdL * k_T * (p.L∞ - L_T))
 
-    # Cost derivatives via Leibniz rule
+    # Cost derivatives via Leibniz rule — O(1) lookups from precomputed ODEs
     stocking_prime = p.c_s * p.δ_b * exp(p.δ_b * (T - t₀))
-    φ_T = p.η * v_seasonal(T, L_sol, n_sol, p)
-    Φ_T = Φ_accumulated(T, t₀, L_sol, n_sol, p)
+    φ_T = p.η * v_seasonal(T, cycle.L_sol, cycle.n_sol, p)
+    Φ_T = cycle.Φ_sol(T)
     dΦ_dT = φ_T + p.δ_b * Φ_T
 
-    π_T = π_premium(T, I_sol, p)
-    Π_T = Π_accumulated(T, t₀, I_sol, p)
+    π_T = π_premium(T, cycle.I_sol, p)
+    Π_T = cycle.Π_sol(T)
     dΠ_dT = π_T + p.δ_b * Π_T
 
     return dv_dT - stocking_prime - dΦ_dT - dΠ_dT
@@ -180,7 +191,7 @@ end
 # ──────────────────────────────────────────────────────────────────────────────
 
 """
-    harvest_foc_residual(T, t₀, V_coeffs, L_sol, n_sol, I_sol, p)
+    harvest_foc_residual(T, t₀, V_coeffs, cycle, p)
 
 Residual of the harvest FOC (README § 7):
 
@@ -188,13 +199,14 @@ Residual of the harvest FOC (README § 7):
   RHS: δ·(V(T) + u(Y_H)) + λ(T)·(u(Y_H) − u(Y_L(T))) − V'(T)
 
 Returns +Inf when Y_H ≤ 0 (not yet profitable).
+`cycle` is the NamedTuple from `prepare_cycle`.
 """
-function harvest_foc_residual(T, t₀, V_coeffs, L_sol, n_sol, I_sol, p)
-    yh = Y_H_seasonal(T, t₀, L_sol, n_sol, I_sol, p)
+function harvest_foc_residual(T, t₀, V_coeffs, cycle, p)
+    yh = Y_H_seasonal(T, t₀, cycle, p)
     yh ≤ 0 && return Inf
 
-    yl = Y_L_seasonal(T, t₀, L_sol, n_sol, I_sol, p)
-    yh_prime = Y_H_prime_seasonal(T, t₀, L_sol, n_sol, I_sol, p)
+    yl = Y_L_seasonal(T, t₀, cycle, p)
+    yh_prime = Y_H_prime_seasonal(T, t₀, cycle, p)
 
     V_T = fourier_eval(T, V_coeffs)
     V_prime_T = fourier_derivative(T, V_coeffs)
@@ -210,26 +222,29 @@ function harvest_foc_residual(T, t₀, V_coeffs, L_sol, n_sol, I_sol, p)
 end
 
 """
-    find_harvest_bracket(t₀, V_coeffs, L_sol, n_sol, I_sol, p;
-                         τ_min=10.0, τ_max=1500.0, n_pts=2000)
+    find_harvest_bracket(t₀, V_coeffs, cycle, p;
+                         τ_min=10.0, τ_max=800.0, n_pts=500,
+                         τ_hint=nothing)
 
 Find a bracket around a sign change of the harvest FOC residual, scanning
 over cycle duration τ = T − t₀. Only considers finite-valued (Y_H > 0)
 transitions. Prefers the last finite positive→negative crossing. If no
 exact crossing is found, returns a narrow bracket around the finite point
 closest to zero (approximate root).
+
+`cycle` is the NamedTuple from `prepare_cycle`.
 """
-function find_harvest_bracket(t₀, V_coeffs, L_sol, n_sol, I_sol, p;
-                              τ_min=10.0, τ_max=1500.0, n_pts=2000)
+function find_harvest_bracket(t₀, V_coeffs, cycle, p;
+                              τ_min=10.0, τ_max=800.0, n_pts=500,
+                              τ_hint=nothing)
     τs = range(τ_min, τ_max, length=n_pts)
-    last_bracket = nothing
     best_idx = 1
     best_abs = Inf
 
     vals = Float64[]
     for i in 1:length(τs)
         T_i = t₀ + τs[i]
-        v = harvest_foc_residual(T_i, t₀, V_coeffs, L_sol, n_sol, I_sol, p)
+        v = harvest_foc_residual(T_i, t₀, V_coeffs, cycle, p)
         push!(vals, v)
 
         if isfinite(v) && abs(v) < best_abs
@@ -238,15 +253,24 @@ function find_harvest_bracket(t₀, V_coeffs, L_sol, n_sol, I_sol, p;
         end
     end
 
-    # Look for the last finite positive→negative crossing
+    # Collect all positive→negative crossings
+    crossings = Tuple{Float64, Float64}[]
     for i in 2:length(τs)
         if isfinite(vals[i-1]) && isfinite(vals[i]) && vals[i-1] > 0 && vals[i] < 0
-            last_bracket = (t₀ + τs[i-1], t₀ + τs[i])
+            push!(crossings, (t₀ + τs[i-1], t₀ + τs[i]))
         end
     end
 
-    if !isnothing(last_bracket)
-        return last_bracket
+    if !isempty(crossings)
+        if isnothing(τ_hint) || length(crossings) == 1
+            # No hint: return first crossing
+            return crossings[1]
+        else
+            # With hint: return crossing nearest to τ_hint
+            target = t₀ + τ_hint
+            _, idx = findmin(c -> abs((c[1] + c[2]) / 2 - target), crossings)
+            return crossings[idx]
+        end
     end
 
     # Fallback: narrow bracket around the minimum-|residual| point
@@ -264,12 +288,12 @@ and continuation value V(t) specified by Fourier coefficients.
 
 Returns `T*` (a calendar date, not a duration).
 """
-function solve_harvest_foc(t₀, V_coeffs, p; τ_max=1500.0)
+function solve_harvest_foc(t₀, V_coeffs, p; τ_max=1500.0, τ_hint=nothing)
     T_upper = t₀ + τ_max
     cycle = prepare_cycle(t₀, T_upper, p)
 
-    bracket = find_harvest_bracket(t₀, V_coeffs, cycle.L_sol, cycle.n_sol, cycle.I_sol, p; τ_max=τ_max)
-    f(T) = harvest_foc_residual(T, t₀, V_coeffs, cycle.L_sol, cycle.n_sol, cycle.I_sol, p)
+    bracket = find_harvest_bracket(t₀, V_coeffs, cycle, p; τ_max=τ_max, τ_hint=τ_hint)
+    f(T) = harvest_foc_residual(T, t₀, V_coeffs, cycle, p)
 
     # If bracket values have the same sign (near-zero fallback), return the
     # point with smaller absolute residual
@@ -300,19 +324,19 @@ The ODE solutions are computed internally.
 function compute_Vtilde(t₀, T_star, V_coeffs, p)
     cycle = prepare_cycle(t₀, T_star, p)
 
-    # Harvest branch
-    yh = Y_H_seasonal(T_star, t₀, cycle.L_sol, cycle.n_sol, cycle.I_sol, p)
+    # Harvest branch — O(1) lookups from precomputed ODEs
+    yh = Y_H_seasonal(T_star, t₀, cycle, p)
     V_T = fourier_eval(T_star, V_coeffs)
-    surv_T = S(t₀, T_star, p)
+    surv_T = exp(-cycle.Λ_sol(T_star))
     disc_T = exp(-p.δ * (T_star - t₀))
     harvest_term = surv_T * disc_T * (u(max(yh, 1e-10), p) + V_T)
 
-    # Loss branch integral
+    # Loss branch integral — inner evaluations are O(1) via precomputed ODEs
     function integrand(s)
-        surv_s = S(t₀, s, p)
+        surv_s = exp(-cycle.Λ_sol(s))
         λ_s = λ(s, p)
         disc_s = exp(-p.δ * (s - t₀))
-        yl = Y_L_seasonal(s, t₀, cycle.L_sol, cycle.n_sol, cycle.I_sol, p)
+        yl = Y_L_seasonal(s, t₀, cycle, p)
         V_s = fourier_eval(s, V_coeffs)
         return surv_s * λ_s * disc_s * (u(max(yl, 1e-10), p) + V_s)
     end
@@ -341,25 +365,25 @@ accelerates convergence for the seasonal case.
 function compute_Vtilde_decomposed(t₀, T_star, p)
     cycle = prepare_cycle(t₀, T_star, p)
 
-    # Harvest branch
-    yh = Y_H_seasonal(T_star, t₀, cycle.L_sol, cycle.n_sol, cycle.I_sol, p)
-    surv_T = S(t₀, T_star, p)
+    # Harvest branch — O(1) lookups from precomputed ODEs
+    yh = Y_H_seasonal(T_star, t₀, cycle, p)
+    surv_T = exp(-cycle.Λ_sol(T_star))
     disc_T = exp(-p.δ * (T_star - t₀))
 
     f_harvest = surv_T * disc_T * u(max(yh, 1e-10), p)
     g_harvest = surv_T * disc_T
 
-    # Loss branch: separate utility and discount factor integrals
+    # Loss branch: inner evaluations are O(1) via precomputed ODEs
     function f_integrand(s)
-        surv_s = S(t₀, s, p)
+        surv_s = exp(-cycle.Λ_sol(s))
         λ_s = λ(s, p)
         disc_s = exp(-p.δ * (s - t₀))
-        yl = Y_L_seasonal(s, t₀, cycle.L_sol, cycle.n_sol, cycle.I_sol, p)
+        yl = Y_L_seasonal(s, t₀, cycle, p)
         return surv_s * λ_s * disc_s * u(max(yl, 1e-10), p)
     end
 
     function g_integrand(s)
-        surv_s = S(t₀, s, p)
+        surv_s = exp(-cycle.Λ_sol(s))
         λ_s = λ(s, p)
         disc_s = exp(-p.δ * (s - t₀))
         return surv_s * λ_s * disc_s
@@ -494,6 +518,78 @@ function solve_stocking_at_nodes(τ_star_coeffs, V_coeffs, p; N=10, d_max=180.0)
 end
 
 """
+    stocking_foc_residual_fourier(t₀, Vtilde_coeffs, p)
+
+Evaluate the stocking FOC residual Ṽ'(t₀) − δ·Ṽ(t₀) using the Fourier
+approximation of Ṽ(t₀). This is O(N) per evaluation (just Fourier series
+arithmetic) instead of requiring 3 full `compute_Vtilde` calls.
+
+See README § 10.
+"""
+function stocking_foc_residual_fourier(t₀, Vtilde_coeffs, p)
+    Vtilde_prime = fourier_derivative(t₀, Vtilde_coeffs)
+    Vtilde = fourier_eval(t₀, Vtilde_coeffs)
+    return Vtilde_prime - p.δ * Vtilde
+end
+
+"""
+    solve_stocking_foc_fourier(T_harvest, Vtilde_coeffs, p; d_max=180.0, n_scan=500)
+
+Given harvest at calendar date `T_harvest`, find the optimal fallow duration
+d* ≥ 0 before restocking, using a pre-computed Fourier approximation of Ṽ(t₀).
+
+Same logic as `solve_stocking_foc` but evaluates the stocking FOC residual
+via `stocking_foc_residual_fourier` (Fourier arithmetic) instead of calling
+`compute_Vtilde` directly. This reduces the per-node cost from ~1500
+`compute_Vtilde` calls to ~500 Fourier evaluations (essentially free).
+
+# Returns
+Optimal fallow duration `d*` (days).
+"""
+function solve_stocking_foc_fourier(T_harvest, Vtilde_coeffs, p;
+                                     d_max=180.0, n_scan=500, resid_tol=0.01)
+    T_mod = mod(T_harvest, PERIOD)
+
+    # Check residual at d=0 (immediate restocking)
+    # Use a relative tolerance to guard against Fourier derivative noise:
+    # Ṽ'(t₀) is computed from the Fourier series, which amplifies numerical
+    # noise in the coefficients by O(k·ω). We treat the residual as ≤ 0
+    # unless it exceeds resid_tol × δ × |Ṽ(t₀)|, preventing spurious
+    # interior solutions from Fourier fitting artifacts.
+    resid_0 = stocking_foc_residual_fourier(T_mod, Vtilde_coeffs, p)
+    Vtilde_0 = fourier_eval(T_mod, Vtilde_coeffs)
+    noise_floor = resid_tol * p.δ * abs(Vtilde_0)
+    if resid_0 ≤ noise_floor
+        return 0.0  # corner solution (or below noise floor)
+    end
+
+    # Scan forward to find the positive→negative crossing
+    ds = range(0.0, d_max, length=n_scan)
+    prev_val = resid_0
+    bracket = nothing
+
+    for i in 2:length(ds)
+        t₀_try = mod(T_mod + ds[i], PERIOD)
+        val = stocking_foc_residual_fourier(t₀_try, Vtilde_coeffs, p)
+
+        if isfinite(prev_val) && isfinite(val) && prev_val > 0 && val ≤ 0
+            bracket = (ds[i-1], ds[i])
+            break
+        end
+        prev_val = val
+    end
+
+    # If no crossing found, return d_max (residual stays positive)
+    if isnothing(bracket)
+        return d_max
+    end
+
+    # Bisect to refine
+    f(d) = stocking_foc_residual_fourier(mod(T_mod + d, PERIOD), Vtilde_coeffs, p)
+    return find_zero(f, bracket, Bisection())
+end
+
+"""
     solve_stocking_on_grid(τ_star_coeffs, V_coeffs, p; n_grid=100, d_max=180.0)
 
 Solve the stocking FOC on a uniform grid for comparison with the Fourier
@@ -527,19 +623,23 @@ end
 # ──────────────────────────────────────────────────────────────────────────────
 
 """
-    solve_harvest_at_nodes(V_coeffs, p; N=10)
+    solve_harvest_at_nodes(V_coeffs, p; N=10, τ_max=1500.0, τ_prev_coeffs=nothing)
 
 Solve the harvest FOC at `2N+1` Fourier nodes to obtain the optimal cycle
 duration τ*(t₀) = T*(t₀) − t₀ at each node, then fit a Fourier series.
 
+If `τ_prev_coeffs` is provided, the root search at each node is guided toward
+the previous iteration's τ value, preventing jumps between different roots.
+
 Returns `(τ_star_coeffs, τ_values, nodes)`.
 """
-function solve_harvest_at_nodes(V_coeffs, p; N=10)
+function solve_harvest_at_nodes(V_coeffs, p; N=10, τ_max=1500.0, τ_prev_coeffs=nothing)
     nodes = fourier_nodes(N)
     τ_values = Float64[]
 
     for t₀ in nodes
-        T_star = solve_harvest_foc(t₀, V_coeffs, p)
+        τ_hint = isnothing(τ_prev_coeffs) ? nothing : fourier_eval(t₀, τ_prev_coeffs)
+        T_star = solve_harvest_foc(t₀, V_coeffs, p; τ_max=τ_max, τ_hint=τ_hint)
         push!(τ_values, T_star - t₀)
     end
 

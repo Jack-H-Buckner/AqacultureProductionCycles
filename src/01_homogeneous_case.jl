@@ -93,6 +93,25 @@ function v_homogeneous(τ, p)
 end
 
 """
+    w_homogeneous(τ, p)
+
+Total stock biomass at age τ under constant parameters:
+  w(τ) = n(τ) · W(L(τ))
+
+Used for feed cost calculations (feed costs are proportional to biomass,
+not market value).
+
+# Arguments
+- `τ` : age (days since stocking)
+- `p` : parameter set
+"""
+function w_homogeneous(τ, p)
+    L = p.L∞ - (p.L∞ - p.L₀) * exp(-p.k_const * τ)
+    n = p.n₀ * exp(-p.m_const * τ)
+    return n * W_weight(L, p)
+end
+
+"""
     v_homogeneous_prime(τ, p)
 
 Time derivative of stock value dv/dτ under constant parameters, computed
@@ -271,17 +290,19 @@ end
 # ──────────────────────────────────────────────────────────────────────────────
 # Case 3: Add feed costs (η > 0, constant hazard)
 #   Y_H(T) = v(T) − c_s·exp(δ_b·T) − Φ(T) − c_h
-#   Φ(T) = ∫₀ᵀ η·v(s)·exp(δ_b·(T−s)) ds
+#   Φ(T) = ∫₀ᵀ η·w(s)·exp(δ_b·(T−s)) ds  where w = n·W (total biomass)
 # ──────────────────────────────────────────────────────────────────────────────
 
 """
     Φ_homogeneous(T, p)
 
 Accumulated feed costs compounded to harvest time T under constant parameters:
-  Φ(T) = ∫₀ᵀ η·v(s)·exp(δ_b·(T−s)) ds
+  Φ(T) = ∫₀ᵀ η·w(s)·exp(δ_b·(T−s)) ds
+
+where w(s) = n(s)·W(L(s)) is total biomass.
 """
 function Φ_homogeneous(T, p)
-    integrand(s) = p.η * v_homogeneous(s, p) * exp(p.δ_b * (T - s))
+    integrand(s) = p.η * w_homogeneous(s, p) * exp(p.δ_b * (T - s))
     val, _ = quadgk(integrand, 0.0, T)
     return val
 end
@@ -290,13 +311,13 @@ end
     Φ_homogeneous_prime(T, p)
 
 Derivative of accumulated feed costs with respect to T:
-  dΦ/dT = η·v(T) + δ_b·Φ(T)
+  dΦ/dT = η·w(T) + δ_b·Φ(T)
 
-(By Leibniz rule: the boundary term η·v(T)·exp(0) plus the integral of
+(By Leibniz rule: the boundary term η·w(T)·exp(0) plus the integral of
 δ_b times the integrand.)
 """
 function Φ_homogeneous_prime(T, p)
-    return p.η * v_homogeneous(T, p) + p.δ_b * Φ_homogeneous(T, p)
+    return p.η * w_homogeneous(T, p) + p.δ_b * Φ_homogeneous(T, p)
 end
 
 """
@@ -375,7 +396,7 @@ end
 # ──────────────────────────────────────────────────────────────────────────────
 # Case 4: Add insurance (constant hazard, breakeven coverage)
 #   Indemnity ODE has constant coefficients when λ is constant:
-#     I'(t) = (λ/(1−Q) + δ_b)·I + η·v(t) + c_I/(1−Q) − δ_b·(c₂+Y_MIN)
+#     I'(t) = (λ/(1−Q) + δ_b)·I + η·w(t) + c_I/(1−Q) − δ_b·(c₂+Y_MIN)
 #     I(0) = Y_MIN + c_s + c₂
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -383,7 +404,7 @@ end
     solve_indemnity_homogeneous(T, p)
 
 Solve the indemnity ODE under constant hazard. Although the ODE has a
-constant-coefficient linear part, the forcing term η·v(τ) is nonlinear
+constant-coefficient linear part, the forcing term η·w(τ) is nonlinear
 (von Bertalanffy growth), so we integrate numerically.
 
 # Returns
@@ -395,7 +416,7 @@ function solve_indemnity_homogeneous(T, p)
     c_term = p.c_I / (1 - p.Q) - p.δ_b * (p.c₂ + p.Y_MIN)
 
     function dIdt(I, params, τ)
-        return r * I + params.η * v_homogeneous(τ, params) + c_term
+        return r * I + params.η * w_homogeneous(τ, params) + c_term
     end
 
     prob = ODEProblem(dIdt, I₀, (0.0, T), p)

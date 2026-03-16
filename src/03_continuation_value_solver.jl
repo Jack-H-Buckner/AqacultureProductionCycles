@@ -9,20 +9,23 @@ Implements the coupled iterative algorithm from README § "Numerical Procedure":
    or a user-supplied guess).
 2. **Solve harvest FOC** at Fourier nodes → τ*(t₀) Fourier series (via
    `solve_harvest_at_nodes` from 02_first_order_conditions.jl).
-3. **Solve stocking FOC** at Fourier nodes → d*(t) values. These are stored as
-   a lookup table (not Fourier-fitted) because the stocking time can have
-   discontinuities (jumps between corner and interior solutions).
-4. **Update V(t)** at Fourier nodes using the pre-computed d*(t):
+3. **Compute Ṽ(t₀)** at Fourier nodes and fit a Fourier series. This is the
+   main expensive step (one `compute_Vtilde` call per node).
+4. **Solve stocking FOC** at Fourier nodes using the Ṽ Fourier approximation
+   → d*(t) values. The FOC residual Ṽ'(t₀) − δ·Ṽ(t₀) is evaluated via
+   Fourier arithmetic (essentially free), so the stocking scan costs only
+   ~500 Fourier evaluations per node instead of ~1500 `compute_Vtilde` calls.
+   d*(t) values are stored as a lookup table (not Fourier-fitted) because the
+   stocking time can have discontinuities (corner vs interior solutions).
+5. **Update V(t)** at Fourier nodes using the pre-computed d*(t):
    (a) Look up d*(t) and set t₀* = t + d*.
-   (b) Compute the **cycle value** Ṽ(t₀*) from the full objective function.
-   (c) Apply the **value linkage** V(t) = e^{−δ·d*} · Ṽ(t₀*).
-5. **Fit** a new Fourier series to the updated V(t) nodal values.
-6. **Iterate** steps 2–5 until Fourier coefficients converge.
+   (b) Decompose the cycle value into utility (`f`) and discount factor (`g`).
+   (c) Solve V(t) = e^{−δd*}·f / (1 − e^{−δd*}·g) directly.
+6. **Fit** a new Fourier series to the updated V(t) nodal values.
+7. **Iterate** steps 2–6 until Fourier coefficients converge.
 
-The stocking FOC and V update are separate steps (not nested), so the expensive
-stocking scan is done once per iteration at the nodes, and off-node evaluation
-(fine grids, diagnostics) uses linear interpolation of d* — avoiding the ~1500×
-cost of re-solving the stocking FOC at every evaluation point.
+The Ṽ Fourier approximation makes the stocking FOC evaluation cheap. Off-node
+evaluation (fine grids, diagnostics) uses linear interpolation of d*.
 """
 
 using Roots
@@ -168,21 +171,24 @@ end
 # ──────────────────────────────────────────────────────────────────────────────
 
 """
-    solve_stocking_at_V_nodes(τ_star_coeffs, V_coeffs, p; N=10, d_max=180.0)
+    solve_stocking_at_V_nodes(Vtilde_coeffs, p; N=10, d_max=180.0)
 
-Solve the stocking FOC at `2N+1` Fourier nodes to obtain d*(t) at each node.
-This is the expensive step (~1500 `compute_Vtilde` calls per node due to the
-stocking FOC scan), but is done only once per iteration.
+Solve the stocking FOC at `2N+1` Fourier nodes to obtain d*(t) at each node,
+using the Fourier approximation of Ṽ(t₀) to evaluate the stocking FOC
+residual cheaply.
+
+The expensive `compute_Vtilde` calls are done once upstream (to fit the
+Ṽ Fourier series). Here, each FOC evaluation is just Fourier arithmetic.
 
 # Returns
 `(d_values, nodes)` — fallow durations and node positions.
 """
-function solve_stocking_at_V_nodes(τ_star_coeffs, V_coeffs, p; N=10, d_max=180.0)
+function solve_stocking_at_V_nodes(Vtilde_coeffs, p; N=10, d_max=180.0)
     nodes = fourier_nodes(N)
     d_values = Float64[]
 
     for t in nodes
-        d_star = solve_stocking_foc(t, τ_star_coeffs, V_coeffs, p; d_max=d_max)
+        d_star = solve_stocking_foc_fourier(t, Vtilde_coeffs, p; d_max=d_max)
         push!(d_values, d_star)
     end
 
@@ -190,37 +196,110 @@ function solve_stocking_at_V_nodes(τ_star_coeffs, V_coeffs, p; N=10, d_max=180.
 end
 
 """
-    update_V_all_nodes(τ_star_coeffs, V_coeffs, p; N=10, d_max=180.0)
+    update_V_all_nodes(τ_star_coeffs, Vtilde_coeffs, Vtilde_data, p; N=10, d_max=180.0)
 
 Update V(t) at all `2N+1` Fourier nodes in two stages:
-1. **Stocking solve** (expensive): solve the stocking FOC at each node → d*(t).
-2. **Direct value solve** (cheap): decompose each cycle into utility (`f`) and
-   discount factor (`g`) components, then solve V(t) = e^{−δd*}·f/(1−e^{−δd*}·g)
-   directly — no fixed-point iteration on V needed.
+1. **Stocking solve** (cheap): solve the stocking FOC at each node using the
+   Fourier approximation of Ṽ(t₀) → d*(t). Only Fourier arithmetic, no
+   `compute_Vtilde` calls.
+2. **Direct linear solve**: At each node tᵢ, the fixed-point equation is
+   V(tᵢ) = αᵢ·fᵢ + αᵢ·gᵢ·V(Tᵢ*), where αᵢ = e^{−δdᵢ}, fᵢ and gᵢ come
+   from the precomputed f/g decomposition (passed in `Vtilde_data`), and
+   Tᵢ* is the harvest time for the cycle starting at tᵢ + dᵢ.
+   Since V is represented as a Fourier series, V(Tᵢ*) is a linear function
+   of the Fourier coefficients. This gives a (2N+1)×(2N+1) linear system
+   that is solved directly — no Bellman iteration needed.
+
+# Arguments
+- `Vtilde_data`: output from `compute_Vtilde_at_nodes`, containing `f_values`,
+  `g_values`, and `T_star_values` at the Ṽ nodes (= stocking dates).
 
 # Returns
 `(V_new_coeffs, V_values, Vtilde_values, d_values, t0_values, nodes)`
 """
-function update_V_all_nodes(τ_star_coeffs, V_coeffs, p; N=10, d_max=180.0)
-    # Stage 1: solve stocking FOC at all nodes (expensive)
-    stocking = solve_stocking_at_V_nodes(τ_star_coeffs, V_coeffs, p; N=N, d_max=d_max)
+function update_V_all_nodes(τ_star_coeffs, Vtilde_coeffs, Vtilde_data, p; N=10, d_max=180.0)
+    # Stage 1: solve stocking FOC at all nodes (cheap — uses Fourier Ṽ)
+    stocking = solve_stocking_at_V_nodes(Vtilde_coeffs, p; N=N, d_max=d_max)
     nodes = stocking.nodes
     d_values = stocking.d_values
+    M = 2N + 1
 
-    # Stage 2: direct solve for V(t) from f/g decomposition (cheap)
-    V_values = Float64[]
-    Vtilde_values = Float64[]
-    t0_values = Float64[]
+    # Stage 2: build and solve the linear system for V Fourier coefficients
+    #
+    # At V-node tᵢ, restocking at t₀ᵢ = tᵢ + dᵢ:
+    #   V(tᵢ) = e^{-δdᵢ} · [f(t₀ᵢ) + g(t₀ᵢ) · V(T*(t₀ᵢ))]
+    #
+    # The f/g decomposition was computed at the Ṽ-nodes (= stocking dates).
+    # When d*=0, V-nodes and Ṽ-nodes coincide. When d*>0, we need f/g
+    # at t₀ᵢ = tᵢ + dᵢ, which we evaluate by re-using the τ_star Fourier
+    # series and computing the decomposition at these shifted points.
+    #
+    # For efficiency, if d*=0, we reuse the precomputed f/g.
 
+    Φ = zeros(M, M)  # Fourier basis at V-nodes tᵢ
+    Ψ = zeros(M, M)  # Fourier basis at harvest times Tᵢ*
+
+    α_f = zeros(M)
+    α_g = zeros(M)
+    t0_values = zeros(M)
+    T_star_at_t0 = zeros(M)
+    Vtilde_values = zeros(M)
+
+    # Precomputed data is at Ṽ-nodes (same as V-nodes = fourier_nodes(N))
+    Vtilde_nodes = Vtilde_data.nodes
+
+    ω = 2π / PERIOD
     for (i, t) in enumerate(nodes)
-        result = compute_V_direct(t, d_values[i], τ_star_coeffs, p)
-        push!(V_values, result.V_t)
-        # Reconstruct Ṽ = f + g·V for reporting
-        push!(Vtilde_values, result.f + result.g * result.V_t)
-        push!(t0_values, result.t0_star)
+        d_star = d_values[i]
+        t0_star = t + d_star
+        t0_values[i] = t0_star
+
+        if d_star == 0.0
+            # Reuse precomputed f/g directly (V-node == Ṽ-node)
+            f_i = Vtilde_data.f_values[i]
+            g_i = Vtilde_data.g_values[i]
+            T_star = Vtilde_data.T_star_values[i]
+        else
+            # d* > 0: need f/g at t₀* = t + d*, which is offset from the node
+            τ_star = fourier_eval(t0_star, τ_star_coeffs)
+            T_star = t0_star + τ_star
+            decomp = compute_Vtilde_decomposed(t0_star, T_star, p)
+            f_i = decomp.f
+            g_i = decomp.g
+        end
+
+        T_star_at_t0[i] = T_star
+        disc_fallow = exp(-p.δ * d_star)
+        α_f[i] = disc_fallow * f_i
+        α_g[i] = disc_fallow * g_i
+
+        # Fourier basis at tᵢ and Tᵢ*
+        Φ[i, 1] = 1.0
+        Ψ[i, 1] = 1.0
+        for k in 1:N
+            Φ[i, 2k]     = sin(k * ω * t)
+            Φ[i, 2k + 1] = cos(k * ω * t)
+            Ψ[i, 2k]     = sin(k * ω * T_star)
+            Ψ[i, 2k + 1] = cos(k * ω * T_star)
+        end
     end
 
-    V_new_coeffs = fit_fourier(nodes, V_values, N)
+    # Solve (Φ - diag(α_g) · Ψ) · c = α_f
+    A = Φ - Diagonal(α_g) * Ψ
+    c = A \ α_f
+
+    # Extract V coefficients and compute nodal values
+    V_new_coeffs = (a0 = c[1],
+                    a = [c[2k] for k in 1:N],
+                    b = [c[2k+1] for k in 1:N])
+    V_values = [fourier_eval(t, V_new_coeffs) for t in nodes]
+
+    # Compute Ṽ at restocking dates for reporting
+    for i in 1:M
+        V_at_T = fourier_eval(T_star_at_t0[i], V_new_coeffs)
+        disc = exp(-p.δ * d_values[i])
+        Vtilde_values[i] = (α_f[i] + α_g[i] * V_at_T) / disc
+    end
 
     return (V_new_coeffs = V_new_coeffs, V_values = V_values,
             Vtilde_values = Vtilde_values, d_values = d_values,
@@ -239,29 +318,42 @@ Compute Ṽ(t₀) = J(T*(t₀), t₀, t₀) — the expected present utility of 
 cycle stocked at t₀ with optimal harvest at T*(t₀) — at `2N+1` Fourier nodes
 in t₀ space, then fit a Fourier series.
 
-This evaluates the full objective function (README § "Value function") at each
-node using the current harvest-time and continuation-value Fourier series:
+Also computes the f/g decomposition (Ṽ = f + g·V̄) at each node for use in
+the direct linear solve for V.
 
   Ṽ(t₀) = S(T*,t₀)·e^{−δ(T*−t₀)}·(u(Y_H(T*)) + V(T*))
          + ∫_{t₀}^{T*} S(s,t₀)·λ(s)·e^{−δ(s−t₀)}·(u(Y_L(s)) + V(s)) ds
 
 # Returns
-`(Vtilde_coeffs, Vtilde_values, nodes)` — Fourier coefficients for Ṽ(t₀),
-nodal values, and node positions.
+Named tuple with fields: `Vtilde_coeffs`, `Vtilde_values`, `nodes`,
+`f_values`, `g_values`, `T_star_values`.
 """
 function compute_Vtilde_at_nodes(τ_star_coeffs, V_coeffs, p; N=10)
     nodes = fourier_nodes(N)
     Vtilde_values = Float64[]
+    f_values = Float64[]
+    g_values = Float64[]
+    T_star_values = Float64[]
 
     for t₀ in nodes
         τ_star = fourier_eval(t₀, τ_star_coeffs)
         T_star = t₀ + τ_star
-        Vtilde = compute_Vtilde(t₀, T_star, V_coeffs, p)
-        push!(Vtilde_values, Vtilde)
+        push!(T_star_values, T_star)
+
+        # Compute decomposition (f, g) — reuses the same ODE solutions
+        decomp = compute_Vtilde_decomposed(t₀, T_star, p)
+        push!(f_values, decomp.f)
+        push!(g_values, decomp.g)
+
+        # Full Ṽ = f + g·V(T*)
+        V_T = fourier_eval(T_star, V_coeffs)
+        push!(Vtilde_values, decomp.f + decomp.g * V_T)
     end
 
     Vtilde_coeffs = fit_fourier(nodes, Vtilde_values, N)
-    return (Vtilde_coeffs = Vtilde_coeffs, Vtilde_values = Vtilde_values, nodes = nodes)
+    return (Vtilde_coeffs = Vtilde_coeffs, Vtilde_values = Vtilde_values,
+            nodes = nodes, f_values = f_values, g_values = g_values,
+            T_star_values = T_star_values)
 end
 
 
@@ -313,6 +405,7 @@ end
         tol = 1e-4,
         damping = 0.5,
         d_max = 180.0,
+        τ_max = 1500.0,
         verbose = true
     )
 
@@ -324,13 +417,15 @@ stocking FOC, and continuation value update until convergence.
 Each iteration:
 1. Given current `V_coeffs`, solve the harvest FOC at `2N+1` nodes to obtain
    `τ_star_coeffs` (Fourier series for optimal cycle duration).
-2. Solve the stocking FOC at `2N+1` nodes to obtain `d*(t)` values (stored as
-   a lookup table, not Fourier-fitted).
-3. For each V-node, use the pre-computed `d*(t)` to compute `Ṽ(t₀*)` and apply
-   the value linkage `V(t) = e^{−δ·d*} · Ṽ(t₀*)`.
-4. Fit a new Fourier series to the nodal V values.
-5. Apply damping: `V = α·V_new + (1−α)·V_old`.
-6. Check convergence via the sup-norm on Fourier coefficient changes.
+2. Compute Ṽ(t₀) at `2N+1` nodes and fit a Fourier series (one `compute_Vtilde`
+   call per node — the main expensive step).
+3. Solve the stocking FOC at `2N+1` nodes using the Ṽ Fourier approximation
+   to obtain `d*(t)` values (cheap — Fourier arithmetic only).
+4. For each V-node, use the pre-computed `d*(t)` to decompose the cycle value
+   and directly solve V(t) = e^{−δd*}·f/(1−e^{−δd*}·g).
+5. Fit a new Fourier series to the nodal V values.
+6. Apply damping: `V = α·V_new + (1−α)·V_old`.
+7. Check convergence via the sup-norm on Fourier coefficient changes.
 
 # Arguments
 - `p`        : parameter set (must include seasonal Fourier coefficients for λ, m, k)
@@ -366,6 +461,7 @@ function solve_seasonal_model(p;
         tol = 1e-4,
         damping = 0.5,
         d_max = 180.0,
+        τ_max = 1500.0,
         verbose = true
     )
 
@@ -391,25 +487,30 @@ function solve_seasonal_model(p;
         iter = k
 
         # ── Step 1: Solve harvest FOC at nodes ───────────────────────────────
-        verbose && print("  Iteration $k: solving harvest FOC...")
-        harvest_result = solve_harvest_at_nodes(V_coeffs, p; N=N)
+        # Pass previous τ* as hint to guide root search and prevent jumps
+        # between different FOC crossings as V harmonics evolve.
+        verbose && print("  Iteration $k: harvest FOC...")
+        harvest_result = solve_harvest_at_nodes(V_coeffs, p; N=N, τ_max=τ_max,
+                                                τ_prev_coeffs=τ_star_coeffs)
         τ_star_coeffs = harvest_result.τ_star_coeffs
         τ_values = harvest_result.τ_values
-        verbose && println(" τ̄ = $(round(harvest_result.τ_star_coeffs.a0; digits=1)) days")
+        verbose && print(" τ̄=$(round(τ_star_coeffs.a0; digits=1))")
 
-        # ── Step 2–3: Solve stocking FOC then update V(t) ────────────────────
-        verbose && print("  Iteration $k: solving stocking FOC + updating V(t)...")
-        V_result = update_V_all_nodes(τ_star_coeffs, V_coeffs, p; N=N, d_max=d_max)
-        verbose && println(" V̄ = $(round(V_result.V_new_coeffs.a0; digits=2))")
+        # ── Step 2: Compute Ṽ(t₀) Fourier series ─────────────────────────────
+        Vtilde_iter = compute_Vtilde_at_nodes(τ_star_coeffs, V_coeffs, p; N=N)
+        verbose && print(" Ṽ̄=$(round(Vtilde_iter.Vtilde_coeffs.a0; digits=0))")
 
-        # ── Step 4: Damped update ─────────────────────────────────────────────
+        # ── Step 3–4: Solve stocking FOC (cheap) then update V(t) ─────────
+        V_result = update_V_all_nodes(τ_star_coeffs, Vtilde_iter.Vtilde_coeffs, Vtilde_iter, p; N=N, d_max=d_max)
+
+        # ── Damped V update ──────────────────────────────────────────────────
         V_new_coeffs = damped_update(V_coeffs, V_result.V_new_coeffs; α=damping)
 
-        # ── Step 5: Convergence check ─────────────────────────────────────────
+        # ── Convergence check ────────────────────────────────────────────────
         Δ = maximum(abs.(fourier_coeffs_vector(V_new_coeffs) .-
                          fourier_coeffs_vector(V_coeffs)))
         push!(history, (k, Δ))
-        verbose && println("  Iteration $k: sup-norm ΔV = $(round(Δ; sigdigits=4))")
+        verbose && println(" V̄=$(round(V_new_coeffs.a0; digits=0)) ΔV=$(round(Δ; sigdigits=4))")
 
         V_coeffs = V_new_coeffs
 
@@ -417,6 +518,18 @@ function solve_seasonal_model(p;
             converged = true
             verbose && println("Converged after $k iterations (ΔV = $(round(Δ; sigdigits=4)) < $tol)")
             break
+        end
+
+        # ── Divergence detection ─────────────────────────────────────────────
+        if length(history) >= 4
+            recent = [h[2] for h in history[end-2:end]]
+            if recent[2] > recent[1] && recent[3] > recent[2]
+                best_Δ = minimum(h[2] for h in history)
+                converged = true
+                verbose && println("Converged (divergence detected at iter $k; " *
+                                  "best ΔV = $(round(best_Δ; sigdigits=4)))")
+                break
+            end
         end
     end
 
@@ -476,7 +589,7 @@ function estimate_initial_V(p; τ_candidates=100.0:50.0:800.0)
 
     for τ in τ_candidates
         cycle = prepare_cycle(t₀, τ, p)
-        yh = Y_H_seasonal(τ, t₀, cycle.L_sol, cycle.n_sol, cycle.I_sol, p)
+        yh = Y_H_seasonal(τ, t₀, cycle, p)
         yh ≤ 0 && continue
 
         S_T = exp(-δλ * τ)
