@@ -94,8 +94,10 @@ println("Wrote homogeneous_validation_nodes.csv ($(nrow(node_df)) rows)")
 scalar_df = DataFrame(
     quantity  = ["T_star", "V_star", "Vtilde_star", "iterations", "converged"],
     homogeneous = [T_star_hom, V_hom, Vtilde_hom, NaN, NaN],
-    seasonal    = [result.τ_star_coeffs.a0, result.V_coeffs.a0,
-                   result.Vtilde_coeffs.a0, result.iterations,
+    seasonal    = [sum(result.τ_star_coeffs.values)/length(result.τ_star_coeffs.values),
+                   sum(result.V_coeffs.values)/length(result.V_coeffs.values),
+                   sum(result.Vtilde_coeffs.values)/length(result.Vtilde_coeffs.values),
+                   result.iterations,
                    result.converged ? 1.0 : 0.0],
 )
 CSV.write(joinpath(outdir, "homogeneous_validation_scalars.csv"), scalar_df)
@@ -103,13 +105,16 @@ println("Wrote homogeneous_validation_scalars.csv")
 
 # Print summary
 println("\n── Summary ─────────────────────────────────────")
+τ_mean = sum(result.τ_star_coeffs.values) / length(result.τ_star_coeffs.values)
+V_mean = sum(result.V_coeffs.values) / length(result.V_coeffs.values)
+Vt_mean = sum(result.Vtilde_coeffs.values) / length(result.Vtilde_coeffs.values)
 println("  τ*: homogeneous = $(round(T_star_hom; digits=2)), " *
-        "seasonal = $(round(result.τ_star_coeffs.a0; digits=2)) " *
-        "(error = $(round(abs(result.τ_star_coeffs.a0 - T_star_hom) / T_star_hom * 100; digits=4))%)")
+        "seasonal = $(round(τ_mean; digits=2)) " *
+        "(error = $(round(abs(τ_mean - T_star_hom) / T_star_hom * 100; digits=4))%)")
 println("  V:  homogeneous = $(round(V_hom; digits=2)), " *
-        "seasonal = $(round(result.V_coeffs.a0; digits=2)) " *
-        "(error = $(round(abs(result.V_coeffs.a0 - V_hom) / abs(V_hom) * 100; digits=4))%)")
+        "seasonal = $(round(V_mean; digits=2)) " *
+        "(error = $(round(abs(V_mean - V_hom) / abs(V_hom) * 100; digits=4))%)")
 println("  Ṽ:  homogeneous = $(round(Vtilde_hom; digits=2)), " *
-        "seasonal = $(round(result.Vtilde_coeffs.a0; digits=2)) " *
-        "(error = $(round(abs(result.Vtilde_coeffs.a0 - Vtilde_hom) / abs(Vtilde_hom) * 100; digits=4))%)")
+        "seasonal = $(round(Vt_mean; digits=2)) " *
+        "(error = $(round(abs(Vt_mean - Vtilde_hom) / abs(Vtilde_hom) * 100; digits=4))%)")
 println("  d*: all corner = $(all(d -> d == 0.0, result.d_values))")

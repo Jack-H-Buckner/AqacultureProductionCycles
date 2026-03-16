@@ -208,8 +208,8 @@ function harvest_foc_residual(T, t₀, V_coeffs, cycle, p)
     yl = Y_L_seasonal(T, t₀, cycle, p)
     yh_prime = Y_H_prime_seasonal(T, t₀, cycle, p)
 
-    V_T = fourier_eval(T, V_coeffs)
-    V_prime_T = fourier_derivative(T, V_coeffs)
+    V_T = spline_eval(T, V_coeffs)
+    V_prime_T = spline_derivative(T, V_coeffs)
     λ_T = λ(T, p)
 
     u_yh = u(yh, p)
@@ -326,7 +326,7 @@ function compute_Vtilde(t₀, T_star, V_coeffs, p)
 
     # Harvest branch — O(1) lookups from precomputed ODEs
     yh = Y_H_seasonal(T_star, t₀, cycle, p)
-    V_T = fourier_eval(T_star, V_coeffs)
+    V_T = spline_eval(T_star, V_coeffs)
     surv_T = exp(-cycle.Λ_sol(T_star))
     disc_T = exp(-p.δ * (T_star - t₀))
     harvest_term = surv_T * disc_T * (u(max(yh, 1e-10), p) + V_T)
@@ -337,7 +337,7 @@ function compute_Vtilde(t₀, T_star, V_coeffs, p)
         λ_s = λ(s, p)
         disc_s = exp(-p.δ * (s - t₀))
         yl = Y_L_seasonal(s, t₀, cycle, p)
-        V_s = fourier_eval(s, V_coeffs)
+        V_s = spline_eval(s, V_coeffs)
         return surv_s * λ_s * disc_s * (u(max(yl, 1e-10), p) + V_s)
     end
 
@@ -406,8 +406,8 @@ T*(t₀) is evaluated from the Fourier series `T_star_coeffs` (which gives
 the cycle duration τ*(t₀), so T* = t₀ + τ*(t₀)).
 """
 function compute_Vtilde_deriv(t₀, T_star_coeffs, V_coeffs, p; h=0.1)
-    τ_plus  = fourier_eval(t₀ + h, T_star_coeffs)
-    τ_minus = fourier_eval(t₀ - h, T_star_coeffs)
+    τ_plus  = spline_eval(t₀ + h, T_star_coeffs)
+    τ_minus = spline_eval(t₀ - h, T_star_coeffs)
     V_plus  = compute_Vtilde(t₀ + h, t₀ + h + τ_plus, V_coeffs, p)
     V_minus = compute_Vtilde(t₀ - h, t₀ - h + τ_minus, V_coeffs, p)
     return (V_plus - V_minus) / (2h)
@@ -428,7 +428,7 @@ A negative residual indicates that immediate restocking is optimal
 (corner solution with fallow = 0).
 """
 function stocking_foc_residual(t₀, T_star_coeffs, V_coeffs, p)
-    τ_star = fourier_eval(t₀, T_star_coeffs)
+    τ_star = spline_eval(t₀, T_star_coeffs)
     T_star = t₀ + τ_star
     Vtilde = compute_Vtilde(t₀, T_star, V_coeffs, p)
     Vtilde_prime = compute_Vtilde_deriv(t₀, T_star_coeffs, V_coeffs, p)
@@ -505,14 +505,14 @@ function solve_stocking_at_nodes(τ_star_coeffs, V_coeffs, p; N=10, d_max=180.0)
 
         # Also record Ṽ and residual at the optimal stocking date
         t₀_star = mod(T_harvest + d_star, PERIOD)
-        τ_star = fourier_eval(t₀_star, τ_star_coeffs)
+        τ_star = spline_eval(t₀_star, τ_star_coeffs)
         T_star = t₀_star + τ_star
         Vtilde = compute_Vtilde(t₀_star, T_star, V_coeffs, p)
         push!(Vtilde_values, Vtilde)
         push!(residuals, stocking_foc_residual(t₀_star, τ_star_coeffs, V_coeffs, p))
     end
 
-    d_star_coeffs = fit_fourier(nodes, d_values, N)
+    d_star_coeffs = make_spline(nodes, d_values)
     return (d_star_coeffs = d_star_coeffs, d_values = d_values, nodes = nodes,
             Vtilde_values = Vtilde_values, residuals = residuals)
 end
@@ -527,8 +527,8 @@ arithmetic) instead of requiring 3 full `compute_Vtilde` calls.
 See README § 10.
 """
 function stocking_foc_residual_fourier(t₀, Vtilde_coeffs, p)
-    Vtilde_prime = fourier_derivative(t₀, Vtilde_coeffs)
-    Vtilde = fourier_eval(t₀, Vtilde_coeffs)
+    Vtilde_prime = spline_derivative(t₀, Vtilde_coeffs)
+    Vtilde = spline_eval(t₀, Vtilde_coeffs)
     return Vtilde_prime - p.δ * Vtilde
 end
 
@@ -557,7 +557,7 @@ function solve_stocking_foc_fourier(T_harvest, Vtilde_coeffs, p;
     # unless it exceeds resid_tol × δ × |Ṽ(t₀)|, preventing spurious
     # interior solutions from Fourier fitting artifacts.
     resid_0 = stocking_foc_residual_fourier(T_mod, Vtilde_coeffs, p)
-    Vtilde_0 = fourier_eval(T_mod, Vtilde_coeffs)
+    Vtilde_0 = spline_eval(T_mod, Vtilde_coeffs)
     noise_floor = resid_tol * p.δ * abs(Vtilde_0)
     if resid_0 ≤ noise_floor
         return 0.0  # corner solution (or below noise floor)
@@ -606,7 +606,7 @@ function solve_stocking_on_grid(τ_star_coeffs, V_coeffs, p; n_grid=100, d_max=1
         push!(d_grid, d_star)
 
         t₀_star = mod(T_harvest + d_star, PERIOD)
-        τ_star = fourier_eval(t₀_star, τ_star_coeffs)
+        τ_star = spline_eval(t₀_star, τ_star_coeffs)
         T_star = t₀_star + τ_star
         Vtilde = compute_Vtilde(t₀_star, T_star, V_coeffs, p)
         push!(Vtilde_values, Vtilde)
@@ -638,12 +638,12 @@ function solve_harvest_at_nodes(V_coeffs, p; N=10, τ_max=1500.0, τ_prev_coeffs
     τ_values = Float64[]
 
     for t₀ in nodes
-        τ_hint = isnothing(τ_prev_coeffs) ? nothing : fourier_eval(t₀, τ_prev_coeffs)
+        τ_hint = isnothing(τ_prev_coeffs) ? nothing : spline_eval(t₀, τ_prev_coeffs)
         T_star = solve_harvest_foc(t₀, V_coeffs, p; τ_max=τ_max, τ_hint=τ_hint)
         push!(τ_values, T_star - t₀)
     end
 
-    τ_star_coeffs = fit_fourier(nodes, τ_values, N)
+    τ_star_coeffs = make_spline(nodes, τ_values)
     return (τ_star_coeffs = τ_star_coeffs, τ_values = τ_values, nodes = nodes)
 end
 
@@ -680,7 +680,7 @@ function evaluate_stocking_foc_at_nodes(τ_star_coeffs, V_coeffs, p; N=10)
     Vtilde_values = Float64[]
 
     for t₀ in nodes
-        τ_star = fourier_eval(t₀, τ_star_coeffs)
+        τ_star = spline_eval(t₀, τ_star_coeffs)
         T_star = t₀ + τ_star
         Vtilde = compute_Vtilde(t₀, T_star, V_coeffs, p)
         push!(Vtilde_values, Vtilde)
@@ -704,7 +704,7 @@ function evaluate_stocking_foc_on_grid(τ_star_coeffs, V_coeffs, p; n_grid=100)
     Vtilde_values = Float64[]
 
     for t₀ in t₀_grid
-        τ_star = fourier_eval(t₀, τ_star_coeffs)
+        τ_star = spline_eval(t₀, τ_star_coeffs)
         T_star = t₀ + τ_star
         Vtilde = compute_Vtilde(t₀, T_star, V_coeffs, p)
         push!(Vtilde_values, Vtilde)

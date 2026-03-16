@@ -41,26 +41,24 @@ const V_hom = insurance_value(T_hom, I_sol_hom, hom_p)
 # Perturbation: 1% of V_hom
 const A_perturb = 0.01 * V_hom
 
-# Number of harmonics for the test
+# Number of harmonics for the test (determines 2N+1 nodes)
 const N_TEST = 40
 
-# Hypothetical V(t) Fourier coefficients
-const V_coeffs_hyp = (
-    a0 = V_hom,
-    a  = vcat([A_perturb], zeros(N_TEST - 1)),
-    b  = zeros(N_TEST),
-)
+# Hypothetical V(t) as a periodic linear spline: V_hom + A·sin(2πt/365)
+const test_nodes = fourier_nodes(N_TEST)
+const V_hyp_values = [V_hom + A_perturb * sin(2π * t / 365.0) for t in test_nodes]
+const V_coeffs_hyp = make_spline(test_nodes, V_hyp_values)
 
 # ── Shared setup: solve harvest FOC and stocking FOC once ────────────────────
 println("Setup: solving harvest FOC at $(2N_TEST+1) Fourier nodes...")
 const harvest_result_shared = solve_harvest_at_nodes(V_coeffs_hyp, test_p; N=N_TEST)
 const τ_star_coeffs_shared = harvest_result_shared.τ_star_coeffs
-println("Setup: τ̄ = $(round(τ_star_coeffs_shared.a0; digits=1)) days")
+println("Setup: τ̄ = $(round(sum(τ_star_coeffs_shared.values)/length(τ_star_coeffs_shared.values); digits=1)) days")
 
 println("Setup: computing Ṽ(t₀) Fourier series at $(2N_TEST+1) nodes...")
 const Vtilde_shared = compute_Vtilde_at_nodes(τ_star_coeffs_shared, V_coeffs_hyp, test_p; N=N_TEST)
 const Vtilde_coeffs_shared = Vtilde_shared.Vtilde_coeffs
-println("Setup: Ṽ̄ = $(round(Vtilde_coeffs_shared.a0; digits=2))")
+println("Setup: Ṽ̄ = $(round(sum(Vtilde_coeffs_shared.values)/length(Vtilde_coeffs_shared.values); digits=2))")
 
 println("Setup: solving stocking FOC at $(2N_TEST+1) Fourier nodes...")
 const stocking_shared = solve_stocking_at_V_nodes(Vtilde_coeffs_shared, test_p; N=N_TEST)
@@ -80,7 +78,7 @@ println("Setup: d* computed at nodes ($n_corner corner solutions)")
     println("  Computing Ṽ(t₀) at $(2N_TEST+1) Fourier nodes...")
     Vtilde_result = compute_Vtilde_at_nodes(τ_star_coeffs_shared, V_coeffs_hyp, test_p; N=N_TEST)
     Vtilde_coeffs = Vtilde_result.Vtilde_coeffs
-    println("  Ṽ̄(Fourier) = $(round(Vtilde_coeffs.a0; digits=2))")
+    println("  Ṽ̄(spline) = $(round(sum(Vtilde_coeffs.values)/length(Vtilde_coeffs.values); digits=2))")
 
     # Step 2: Compute Ṽ(t₀) on a fine grid of 100 points
     n_fine = 100
@@ -89,14 +87,14 @@ println("Setup: d* computed at nodes ($n_corner corner solutions)")
 
     Vtilde_fine = Float64[]
     for t₀ in t0_fine
-        τ_star = fourier_eval(t₀, τ_star_coeffs_shared)
+        τ_star = spline_eval(t₀, τ_star_coeffs_shared)
         T_star = t₀ + τ_star
         Vtilde = compute_Vtilde(t₀, T_star, V_coeffs_hyp, test_p)
         push!(Vtilde_fine, Vtilde)
     end
 
     # Step 3: Evaluate the Fourier series at the fine grid points
-    Vtilde_fourier_at_grid = [fourier_eval(t, Vtilde_coeffs) for t in t0_fine]
+    Vtilde_fourier_at_grid = [spline_eval(t, Vtilde_coeffs) for t in t0_fine]
 
     # Step 4: Compare
     abs_errors = abs.(Vtilde_fourier_at_grid .- Vtilde_fine)
@@ -122,7 +120,7 @@ end
     println("  Updating V(t) at $(2N_TEST+1) Fourier nodes...")
     V_update = update_V_all_nodes(τ_star_coeffs_shared, Vtilde_coeffs_shared, Vtilde_shared, test_p; N=N_TEST)
     V_new_coeffs = V_update.V_new_coeffs
-    println("  V̄(Fourier) = $(round(V_new_coeffs.a0; digits=2))")
+    println("  V̄(spline) = $(round(sum(V_new_coeffs.values)/length(V_new_coeffs.values); digits=2))")
 
     # Step 2: Compute V(t) on a 100-point fine grid using interpolated d*
     # Uses value linkage V(t) = exp(-δ·d*) · Ṽ(t₀*) matching update_V_all_nodes
@@ -134,13 +132,13 @@ end
     for t in t_fine
         d = interpolate_d_star(t, nodes_shared, d_nodes_shared)
         t0_star = t + d
-        Vtilde_at_t0 = fourier_eval(t0_star, Vtilde_coeffs_shared)
+        Vtilde_at_t0 = spline_eval(t0_star, Vtilde_coeffs_shared)
         V_t = exp(-test_p.δ * d) * Vtilde_at_t0
         push!(V_fine, V_t)
     end
 
     # Step 3: Evaluate the Fourier series at the fine grid points
-    V_fourier_at_grid = [fourier_eval(t, V_new_coeffs) for t in t_fine]
+    V_fourier_at_grid = [spline_eval(t, V_new_coeffs) for t in t_fine]
 
     # Step 4: Compare
     abs_errors = abs.(V_fourier_at_grid .- V_fine)
@@ -203,11 +201,11 @@ end
     t0_fine = collect(range(0.0, PERIOD * (1 - 1/n_fine), length=n_fine))
     Vtilde_fine = Float64[]
     for t₀ in t0_fine
-        τ_star = fourier_eval(t₀, τ_star_coeffs_shared)
+        τ_star = spline_eval(t₀, τ_star_coeffs_shared)
         T_star = t₀ + τ_star
         push!(Vtilde_fine, compute_Vtilde(t₀, T_star, V_coeffs_hyp, test_p))
     end
-    Vtilde_fourier = [fourier_eval(t, Vtilde_coeffs) for t in t0_fine]
+    Vtilde_fourier = [spline_eval(t, Vtilde_coeffs) for t in t0_fine]
 
     df_Vt = DataFrame(
         t0             = t0_fine,
@@ -235,7 +233,7 @@ end
         push!(Vtilde_linkage, res.Vtilde)
         push!(t0_star_fine, res.t0_star)
     end
-    V_fourier = [fourier_eval(t, V_new_coeffs) for t in t_fine]
+    V_fourier = [spline_eval(t, V_new_coeffs) for t in t_fine]
 
     df_V = DataFrame(
         t              = t_fine,

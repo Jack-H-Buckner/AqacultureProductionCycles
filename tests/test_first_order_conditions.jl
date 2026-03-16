@@ -45,12 +45,10 @@ const A_perturb = 0.01 * V_hom
 # Number of harmonics for FOC approximations
 const N_FOC = 40
 
-# Approximate V(t) = V_hom + A·sin(2πt/365)
-const V_coeffs_test = (
-    a0 = V_hom,
-    a  = vcat([A_perturb], zeros(N_FOC - 1)),
-    b  = zeros(N_FOC),
-)
+# Approximate V(t) = V_hom + A·sin(2πt/365) as a periodic linear spline
+const V_test_nodes = fourier_nodes(N_FOC)
+const V_test_values = [V_hom + A_perturb * sin(2π * t / 365.0) for t in V_test_nodes]
+const V_coeffs_test = make_spline(V_test_nodes, V_test_values)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -114,7 +112,7 @@ end
     errors = Float64[]
     for i in 1:length(grid.t₀_grid)
         t₀ = grid.t₀_grid[i]
-        τ_fourier = fourier_eval(t₀, τ_star_coeffs)
+        τ_fourier = spline_eval(t₀, τ_star_coeffs)
         τ_exact = grid.τ_grid[i]
         push!(errors, abs(τ_fourier - τ_exact))
     end
@@ -149,7 +147,7 @@ end
     # Evaluate stocking FOC at a few test points
     test_t0s = [0.0, 100.0, 200.0]
     for t₀ in test_t0s
-        τ_star = fourier_eval(t₀, τ_star_coeffs)
+        τ_star = spline_eval(t₀, τ_star_coeffs)
         T_star = t₀ + τ_star
         Vtilde = compute_Vtilde(t₀, T_star, V_coeffs_test, test_p)
         @test isfinite(Vtilde)
@@ -175,8 +173,8 @@ end
 
     # Fit Fourier series to stocking FOC residuals and Ṽ values
     nodes = stocking_nodes.nodes
-    resid_coeffs = fit_fourier(nodes, stocking_nodes.residuals, N_FOC)
-    Vtilde_coeffs = fit_fourier(nodes, stocking_nodes.Vtilde_values, N_FOC)
+    resid_coeffs = make_spline(nodes, stocking_nodes.residuals)
+    Vtilde_coeffs = make_spline(nodes, stocking_nodes.Vtilde_values)
 
     println("  Ṽ range: $(round(minimum(stocking_nodes.Vtilde_values), digits=1)) — " *
             "$(round(maximum(stocking_nodes.Vtilde_values), digits=1))")
@@ -194,8 +192,8 @@ end
     for i in 1:length(stocking_grid.t₀_grid)
         t₀ = stocking_grid.t₀_grid[i]
         # Fourier-interpolated values
-        resid_fourier = fourier_eval(t₀, resid_coeffs)
-        Vtilde_fourier = fourier_eval(t₀, Vtilde_coeffs)
+        resid_fourier = spline_eval(t₀, resid_coeffs)
+        Vtilde_fourier = spline_eval(t₀, Vtilde_coeffs)
         # Exact values
         resid_exact = stocking_grid.residuals[i]
         Vtilde_exact = stocking_grid.Vtilde_values[i]
@@ -248,7 +246,7 @@ end
     errors = Float64[]
     for i in 1:length(stocking_grid.t₀_grid)
         t₀ = stocking_grid.t₀_grid[i]
-        d_fourier = max(0.0, fourier_eval(t₀, d_star_coeffs))  # clamp negative to 0
+        d_fourier = max(0.0, spline_eval(t₀, d_star_coeffs))  # clamp negative to 0
         d_exact = stocking_grid.d_grid[i]
         push!(errors, abs(d_fourier - d_exact))
     end
@@ -275,7 +273,7 @@ end
     println("  Solving harvest FOC on $(n_grid)-point grid for export...")
     grid = solve_harvest_on_grid(V_coeffs_test, test_p; n_grid=n_grid)
 
-    τ_fourier = [fourier_eval(t, τ_star_coeffs) for t in grid.t₀_grid]
+    τ_fourier = [spline_eval(t, τ_star_coeffs) for t in grid.t₀_grid]
 
     df = DataFrame(
         t0          = grid.t₀_grid,
@@ -296,15 +294,15 @@ end
 
     println("  Evaluating stocking FOC at nodes for export...")
     stocking_nodes = evaluate_stocking_foc_at_nodes(τ_star_coeffs, V_coeffs_test, test_p; N=N_FOC)
-    resid_coeffs = fit_fourier(stocking_nodes.nodes, stocking_nodes.residuals, N_FOC)
-    Vtilde_coeffs_fit = fit_fourier(stocking_nodes.nodes, stocking_nodes.Vtilde_values, N_FOC)
+    resid_coeffs = make_spline(stocking_nodes.nodes, stocking_nodes.residuals)
+    Vtilde_coeffs_fit = make_spline(stocking_nodes.nodes, stocking_nodes.Vtilde_values)
 
     stocking_df = DataFrame(
         t0             = stocking_grid.t₀_grid,
         residual_exact = stocking_grid.residuals,
-        residual_fourier = [fourier_eval(t, resid_coeffs) for t in stocking_grid.t₀_grid],
+        residual_fourier = [spline_eval(t, resid_coeffs) for t in stocking_grid.t₀_grid],
         Vtilde_exact   = stocking_grid.Vtilde_values,
-        Vtilde_fourier = [fourier_eval(t, Vtilde_coeffs_fit) for t in stocking_grid.t₀_grid],
+        Vtilde_fourier = [spline_eval(t, Vtilde_coeffs_fit) for t in stocking_grid.t₀_grid],
     )
     CSV.write(joinpath(outdir, "stocking_foc_comparison.csv"), stocking_df)
 
@@ -326,7 +324,7 @@ end
     println("  Solving stocking FOC (fallow duration) on $(n_grid)-point grid...")
     fallow_grid = solve_stocking_on_grid(τ_star_coeffs, V_coeffs_test, test_p; n_grid=n_grid)
 
-    d_fourier = [max(0.0, fourier_eval(t, d_star_coeffs)) for t in fallow_grid.t₀_grid]
+    d_fourier = [max(0.0, spline_eval(t, d_star_coeffs)) for t in fallow_grid.t₀_grid]
 
     fallow_df = DataFrame(
         T_harvest     = fallow_grid.t₀_grid,

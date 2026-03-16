@@ -35,4 +35,4 @@ The solver finds periodic functions V(t), T*(t₀), and t₀*(T) over a 365-day 
 1. Solving the harvest and stocking FOCs given current continuation values
 2. Updating continuation values Ṽ and V from the objective function and value linkage
 
-All periodic unknowns are represented as truncated Fourier series. The insurance indemnity I(t) is solved via a first-order linear ODE within each cycle evaluation. See `README.md` § "Numerical Procedure" for the full algorithm.
+All endogenous periodic unknowns (V, Ṽ, τ*) are represented as periodic linear splines on equally spaced nodes. The exogenous seasonal rate functions (λ, m, k) remain as Fourier series. The insurance indemnity I(t) is solved via a first-order linear ODE within each cycle evaluation. See `README.md` § "Numerical Procedure" for the full algorithm.

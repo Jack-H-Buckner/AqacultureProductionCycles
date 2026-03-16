@@ -127,7 +127,7 @@ The model's coupled system of equations — harvest FOC, stocking FOC, value lin
 
 ### Representation
 
-All periodic unknowns are approximated as truncated Fourier (harmonic) series with period 365 days:
+All periodic unknowns are approximated as periodic linear splines on equally spaced nodes over the 365-day cycle:
 
 | Function | Description |
 |----------|-------------|
@@ -135,14 +135,14 @@ All periodic unknowns are approximated as truncated Fourier (harmonic) series wi
 | T*(t₀) | Optimal harvest date given stocking date t₀ |
 | t₀*(T) | Optimal stocking date given end-of-cycle time T |
 
-Each is represented as a linear combination of sine and cosine terms with periods ≤ 365 days. The Fourier coefficients are the unknowns to be determined.
+Each is represented by its values at 2N+1 equally spaced nodes, with piecewise linear interpolation between nodes and periodic wraparound. The nodal values are the unknowns to be determined. (The exogenous seasonal rate functions λ(t), m(t), k(t) remain as Fourier series.)
 
 ### Iterative Algorithm
 
 1. **Initialize** V(t) (e.g., constant or informed guess from the risk-neutral solution).
-2. **Solve for optimal controls**: Given the current V(t), evaluate the harvest FOC and stocking FOC at the nodes of the harmonic series to obtain T*(t₀) and t₀*(T).
+2. **Solve for optimal controls**: Given the current V(t), evaluate the harvest FOC and stocking FOC at the spline nodes to obtain T*(t₀) and t₀*(T).
 3. **Update continuation values**: Using the optimal controls, compute Ṽ(t₀) from the full objective function J(T*, t₀, t₀) at each node, then update V(t) via the value linkage V(t) = e^{−δ(t₀* − t)} · Ṽ(t₀*).
-4. **Iterate** steps 2–3 until the Fourier coefficients converge.
+4. **Iterate** steps 2–3 until the nodal values converge.
 
 ### Key Equations Used at Each Iteration
 
@@ -233,12 +233,12 @@ To validate the solver against this analytical benchmark:
 
 1. **Configure the constant-hazard case**: Set λ(t) = λ for all t, set η = 0 (no feed costs), disable insurance (I = 0, π = 0), use linear utility u(x) = x, and force immediate restocking (no fallow).
 2. **Solve analytically**: For a given growth function v(·) and parameter values (λ, δ, c_h), solve the modified Faustmann formula for T* using a root finder. Compute V analytically from the closed-form objective.
-3. **Run the numerical solver**: Initialize the Fourier representation and iterate the coupled system (harvest FOC, stocking FOC, value linkage, value function) until convergence.
-4. **Compare**: The numerical T*(t₀) should be constant across all stocking dates (no seasonal variation), matching the analytical T* to within solver tolerance. The numerical V(t) should likewise be constant and match the analytical V. All non-constant Fourier coefficients (sine and cosine harmonics) should be negligibly small.
+3. **Run the numerical solver**: Initialize the spline representation and iterate the coupled system (harvest FOC, stocking FOC, value linkage, value function) until convergence.
+4. **Compare**: The numerical T*(t₀) should be constant across all stocking dates (no seasonal variation), matching the analytical T* to within solver tolerance. The numerical V(t) should likewise be constant and match the analytical V. All spline nodal values should be approximately equal (negligible variation across nodes).
 
 #### What This Test Checks
 
-This validation exercises several components of the numerical machinery simultaneously: the iterative convergence scheme, the Fourier representation (which should collapse to a constant), the evaluation of the survival function and cost integrals, and the coupled system of FOCs and value equations. Discrepancies indicate bugs in the integration routines, FOC evaluation, or iteration logic, and should be diagnosed before proceeding to the seasonal case.
+This validation exercises several components of the numerical machinery simultaneously: the iterative convergence scheme, the spline representation (which should collapse to a constant), the evaluation of the survival function and cost integrals, and the coupled system of FOCs and value equations. Discrepancies indicate bugs in the integration routines, FOC evaluation, or iteration logic, and should be diagnosed before proceeding to the seasonal case.
 
 #### Intermediate Benchmarks
 

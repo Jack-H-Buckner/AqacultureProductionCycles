@@ -5,27 +5,26 @@ Iterative solver for the seasonal continuation values V(t) and Ṽ(t₀).
 
 Implements the coupled iterative algorithm from README § "Numerical Procedure":
 
-1. **Initialize** V(t) as a constant Fourier series (from the homogeneous solution
-   or a user-supplied guess).
-2. **Solve harvest FOC** at Fourier nodes → τ*(t₀) Fourier series (via
+1. **Initialize** V(t) as a constant periodic linear spline (from the homogeneous
+   solution or a user-supplied guess).
+2. **Solve harvest FOC** at equally spaced nodes → τ*(t₀) spline (via
    `solve_harvest_at_nodes` from 02_first_order_conditions.jl).
-3. **Compute Ṽ(t₀)** at Fourier nodes and fit a Fourier series. This is the
-   main expensive step (one `compute_Vtilde` call per node).
-4. **Solve stocking FOC** at Fourier nodes using the Ṽ Fourier approximation
-   → d*(t) values. The FOC residual Ṽ'(t₀) − δ·Ṽ(t₀) is evaluated via
-   Fourier arithmetic (essentially free), so the stocking scan costs only
-   ~500 Fourier evaluations per node instead of ~1500 `compute_Vtilde` calls.
-   d*(t) values are stored as a lookup table (not Fourier-fitted) because the
-   stocking time can have discontinuities (corner vs interior solutions).
-5. **Update V(t)** at Fourier nodes using the pre-computed d*(t):
+3. **Compute Ṽ(t₀)** at nodes and fit a linear spline. This is the main
+   expensive step (one `compute_Vtilde` call per node).
+4. **Solve stocking FOC** at nodes using the Ṽ spline approximation → d*(t)
+   values. The FOC residual Ṽ'(t₀) − δ·Ṽ(t₀) is evaluated via spline
+   interpolation (essentially free), so the stocking scan costs only ~500
+   spline evaluations per node instead of ~1500 `compute_Vtilde` calls.
+   d*(t) values are stored as a lookup table because the stocking time can
+   have discontinuities (corner vs interior solutions).
+5. **Update V(t)** at nodes using the pre-computed d*(t):
    (a) Look up d*(t) and set t₀* = t + d*.
    (b) Decompose the cycle value into utility (`f`) and discount factor (`g`).
-   (c) Solve V(t) = e^{−δd*}·f / (1 − e^{−δd*}·g) directly.
-6. **Fit** a new Fourier series to the updated V(t) nodal values.
-7. **Iterate** steps 2–6 until Fourier coefficients converge.
+   (c) Solve V(t) via a linear system using spline interpolation weights.
+6. **Iterate** steps 2–5 until nodal values converge.
 
-The Ṽ Fourier approximation makes the stocking FOC evaluation cheap. Off-node
-evaluation (fine grids, diagnostics) uses linear interpolation of d*.
+Linear splines can represent discontinuities and sharp features that arise
+in continuation values without Gibbs ringing artifacts.
 """
 
 using Roots
@@ -44,18 +43,19 @@ include("02_first_order_conditions.jl")
 """
     initialize_V_constant(V0; N=10)
 
-Create a constant Fourier series V(t) = V0 (all harmonics zero).
+Create a constant periodic linear spline V(t) = V0 at 2N+1 equally spaced nodes.
 Used to seed the iterative solver.
 
 # Arguments
 - `V0` : constant continuation value (e.g. from the homogeneous model)
-- `N`  : number of harmonics (determines the coefficient vector length)
+- `N`  : determines number of nodes (2N+1)
 
 # Returns
-A `(a0, a, b)` NamedTuple with `a0 = V0` and zero sine/cosine coefficients.
+A `(nodes, values)` NamedTuple with constant values.
 """
 function initialize_V_constant(V0; N=10)
-    return (a0 = V0, a = zeros(N), b = zeros(N))
+    nodes = fourier_nodes(N)
+    return make_spline(nodes, fill(V0, 2N + 1))
 end
 
 
@@ -71,35 +71,11 @@ domain [0, 365). Wraps `t` into [0, 365) before interpolation.
 
 # Arguments
 - `t`        : calendar date at which to evaluate d*
-- `nodes`    : sorted node positions in [0, 365) (from `fourier_nodes`)
+- `nodes`    : sorted node positions in [0, 365)
 - `d_values` : pre-computed d* values at the nodes
 """
 function interpolate_d_star(t, nodes, d_values)
-    t_mod = mod(t, PERIOD)
-    n = length(nodes)
-
-    # Find bracketing interval
-    # nodes are sorted in [0, PERIOD)
-    idx = searchsortedlast(nodes, t_mod)
-
-    if idx == 0 || idx == n
-        # Wrap-around: between last node and first node + PERIOD
-        t_lo = nodes[end]
-        t_hi = nodes[1] + PERIOD
-        d_lo = d_values[end]
-        d_hi = d_values[1]
-        t_eff = idx == 0 ? t_mod + PERIOD : t_mod
-    else
-        t_lo = nodes[idx]
-        t_hi = nodes[idx + 1]
-        d_lo = d_values[idx]
-        d_hi = d_values[idx + 1]
-        t_eff = t_mod
-    end
-
-    # Linear interpolation
-    frac = (t_eff - t_lo) / (t_hi - t_lo)
-    return d_lo + frac * (d_hi - d_lo)
+    return spline_eval(t, make_spline(nodes, d_values))
 end
 
 
@@ -115,7 +91,7 @@ given a pre-computed fallow duration d*(t).
 
 **Steps**:
 1. Set t₀* = t + d*.
-2. Look up τ*(t₀*) from the harvest-time Fourier series.
+2. Look up τ*(t₀*) from the harvest-time spline.
 3. Compute Ṽ(t₀*) from the full objective function.
 4. Return V(t) = e^{−δ·d*} · Ṽ(t₀*).
 
@@ -125,7 +101,7 @@ stocking date.
 """
 function compute_V_from_d(t, d_star, τ_star_coeffs, V_coeffs, p)
     t0_star = t + d_star
-    τ_star = fourier_eval(t0_star, τ_star_coeffs)
+    τ_star = spline_eval(t0_star, τ_star_coeffs)
     T_star = t0_star + τ_star
     Vtilde = compute_Vtilde(t0_star, T_star, V_coeffs, p)
     V_t = exp(-p.δ * d_star) * Vtilde
@@ -149,7 +125,7 @@ and optimal stocking date.
 """
 function compute_V_direct(t, d_star, τ_star_coeffs, p)
     t0_star = t + d_star
-    τ_star = fourier_eval(t0_star, τ_star_coeffs)
+    τ_star = spline_eval(t0_star, τ_star_coeffs)
     T_star = t0_star + τ_star
 
     decomp = compute_Vtilde_decomposed(t0_star, T_star, p)
@@ -167,18 +143,15 @@ end
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4. Stocking FOC solve and V update at all Fourier nodes
+# 4. Stocking FOC solve and V update at all nodes
 # ──────────────────────────────────────────────────────────────────────────────
 
 """
     solve_stocking_at_V_nodes(Vtilde_coeffs, p; N=10, d_max=180.0)
 
-Solve the stocking FOC at `2N+1` Fourier nodes to obtain d*(t) at each node,
-using the Fourier approximation of Ṽ(t₀) to evaluate the stocking FOC
+Solve the stocking FOC at `2N+1` nodes to obtain d*(t) at each node,
+using the spline approximation of Ṽ(t₀) to evaluate the stocking FOC
 residual cheaply.
-
-The expensive `compute_Vtilde` calls are done once upstream (to fit the
-Ṽ Fourier series). Here, each FOC evaluation is just Fourier arithmetic.
 
 # Returns
 `(d_values, nodes)` — fallow durations and node positions.
@@ -198,17 +171,17 @@ end
 """
     update_V_all_nodes(τ_star_coeffs, Vtilde_coeffs, Vtilde_data, p; N=10, d_max=180.0)
 
-Update V(t) at all `2N+1` Fourier nodes in two stages:
+Update V(t) at all `2N+1` nodes in two stages:
 1. **Stocking solve** (cheap): solve the stocking FOC at each node using the
-   Fourier approximation of Ṽ(t₀) → d*(t). Only Fourier arithmetic, no
+   spline approximation of Ṽ(t₀) → d*(t). Only spline arithmetic, no
    `compute_Vtilde` calls.
 2. **Direct linear solve**: At each node tᵢ, the fixed-point equation is
    V(tᵢ) = αᵢ·fᵢ + αᵢ·gᵢ·V(Tᵢ*), where αᵢ = e^{−δdᵢ}, fᵢ and gᵢ come
    from the precomputed f/g decomposition (passed in `Vtilde_data`), and
    Tᵢ* is the harvest time for the cycle starting at tᵢ + dᵢ.
-   Since V is represented as a Fourier series, V(Tᵢ*) is a linear function
-   of the Fourier coefficients. This gives a (2N+1)×(2N+1) linear system
-   that is solved directly — no Bellman iteration needed.
+   Since V is represented as a linear spline, V(Tᵢ*) is a weighted average
+   of two bracketing nodal values. This gives a (2N+1)×(2N+1) sparse linear
+   system that is solved directly — no Bellman iteration needed.
 
 # Arguments
 - `Vtilde_data`: output from `compute_Vtilde_at_nodes`, containing `f_values`,
@@ -218,26 +191,23 @@ Update V(t) at all `2N+1` Fourier nodes in two stages:
 `(V_new_coeffs, V_values, Vtilde_values, d_values, t0_values, nodes)`
 """
 function update_V_all_nodes(τ_star_coeffs, Vtilde_coeffs, Vtilde_data, p; N=10, d_max=180.0)
-    # Stage 1: solve stocking FOC at all nodes (cheap — uses Fourier Ṽ)
+    # Stage 1: solve stocking FOC at all nodes (cheap — uses spline Ṽ)
     stocking = solve_stocking_at_V_nodes(Vtilde_coeffs, p; N=N, d_max=d_max)
     nodes = stocking.nodes
     d_values = stocking.d_values
     M = 2N + 1
 
-    # Stage 2: build and solve the linear system for V Fourier coefficients
+    # Stage 2: build and solve the linear system for V nodal values
     #
-    # At V-node tᵢ, restocking at t₀ᵢ = tᵢ + dᵢ:
+    # At node tᵢ, restocking at t₀ᵢ = tᵢ + dᵢ:
     #   V(tᵢ) = e^{-δdᵢ} · [f(t₀ᵢ) + g(t₀ᵢ) · V(T*(t₀ᵢ))]
     #
-    # The f/g decomposition was computed at the Ṽ-nodes (= stocking dates).
-    # When d*=0, V-nodes and Ṽ-nodes coincide. When d*>0, we need f/g
-    # at t₀ᵢ = tᵢ + dᵢ, which we evaluate by re-using the τ_star Fourier
-    # series and computing the decomposition at these shifted points.
-    #
-    # For efficiency, if d*=0, we reuse the precomputed f/g.
+    # Since V is a linear spline, V(Tᵢ*) is a weighted average of two
+    # bracketing nodal values: V(Tᵢ*) = (1-w)·V[j] + w·V[j+1].
+    # This gives a linear system (I - diag(α_g) · W) · v = α_f
+    # where W is the spline interpolation weight matrix.
 
-    Φ = zeros(M, M)  # Fourier basis at V-nodes tᵢ
-    Ψ = zeros(M, M)  # Fourier basis at harvest times Tᵢ*
+    W = zeros(M, M)  # Spline interpolation weights: V(Tᵢ*) = Σⱼ W[i,j] · vⱼ
 
     α_f = zeros(M)
     α_g = zeros(M)
@@ -245,23 +215,19 @@ function update_V_all_nodes(τ_star_coeffs, Vtilde_coeffs, Vtilde_data, p; N=10,
     T_star_at_t0 = zeros(M)
     Vtilde_values = zeros(M)
 
-    # Precomputed data is at Ṽ-nodes (same as V-nodes = fourier_nodes(N))
-    Vtilde_nodes = Vtilde_data.nodes
-
-    ω = 2π / PERIOD
     for (i, t) in enumerate(nodes)
         d_star = d_values[i]
         t0_star = t + d_star
         t0_values[i] = t0_star
 
         if d_star == 0.0
-            # Reuse precomputed f/g directly (V-node == Ṽ-node)
+            # Reuse precomputed f/g directly (node == Ṽ-node)
             f_i = Vtilde_data.f_values[i]
             g_i = Vtilde_data.g_values[i]
             T_star = Vtilde_data.T_star_values[i]
         else
             # d* > 0: need f/g at t₀* = t + d*, which is offset from the node
-            τ_star = fourier_eval(t0_star, τ_star_coeffs)
+            τ_star = spline_eval(t0_star, τ_star_coeffs)
             T_star = t0_star + τ_star
             decomp = compute_Vtilde_decomposed(t0_star, T_star, p)
             f_i = decomp.f
@@ -273,30 +239,23 @@ function update_V_all_nodes(τ_star_coeffs, Vtilde_coeffs, Vtilde_data, p; N=10,
         α_f[i] = disc_fallow * f_i
         α_g[i] = disc_fallow * g_i
 
-        # Fourier basis at tᵢ and Tᵢ*
-        Φ[i, 1] = 1.0
-        Ψ[i, 1] = 1.0
-        for k in 1:N
-            Φ[i, 2k]     = sin(k * ω * t)
-            Φ[i, 2k + 1] = cos(k * ω * t)
-            Ψ[i, 2k]     = sin(k * ω * T_star)
-            Ψ[i, 2k + 1] = cos(k * ω * T_star)
-        end
+        # Spline interpolation weights for V(Tᵢ*)
+        iw = spline_interp_weights(T_star, nodes)
+        W[i, iw.idx_lo] += 1 - iw.weight
+        W[i, iw.idx_hi] += iw.weight
     end
 
-    # Solve (Φ - diag(α_g) · Ψ) · c = α_f
-    A = Φ - Diagonal(α_g) * Ψ
-    c = A \ α_f
+    # Solve (I - diag(α_g) · W) · v = α_f
+    A = Matrix{Float64}(I, M, M) - Diagonal(α_g) * W
+    v = A \ α_f
 
-    # Extract V coefficients and compute nodal values
-    V_new_coeffs = (a0 = c[1],
-                    a = [c[2k] for k in 1:N],
-                    b = [c[2k+1] for k in 1:N])
-    V_values = [fourier_eval(t, V_new_coeffs) for t in nodes]
+    # The nodal values ARE the spline coefficients
+    V_new_coeffs = make_spline(nodes, v)
+    V_values = copy(v)
 
     # Compute Ṽ at restocking dates for reporting
     for i in 1:M
-        V_at_T = fourier_eval(T_star_at_t0[i], V_new_coeffs)
+        V_at_T = spline_eval(T_star_at_t0[i], V_new_coeffs)
         disc = exp(-p.δ * d_values[i])
         Vtilde_values[i] = (α_f[i] + α_g[i] * V_at_T) / disc
     end
@@ -307,16 +266,67 @@ function update_V_all_nodes(τ_star_coeffs, Vtilde_coeffs, Vtilde_data, p; N=10,
 end
 
 
+"""
+    update_V_all_nodes_no_fallow(τ_star_coeffs, Vtilde_data, p; N=10)
+
+Update V(t) at all `2N+1` nodes with forced d*=0 (immediate restocking).
+When d*=0, V(t) = Ṽ(t) = f(t) + g(t)·V(T*(t)), giving the same linear system
+structure as `update_V_all_nodes` but without the stocking FOC solve.
+
+# Returns
+Same NamedTuple format as `update_V_all_nodes`.
+"""
+function update_V_all_nodes_no_fallow(τ_star_coeffs, Vtilde_data, p; N=10)
+    nodes = fourier_nodes(N)
+    M = 2N + 1
+
+    W = zeros(M, M)
+    α_f = zeros(M)
+    α_g = zeros(M)
+    t0_values = copy(nodes)
+    T_star_at_t0 = zeros(M)
+    d_values = zeros(M)
+
+    for (i, t) in enumerate(nodes)
+        # d* = 0: restocking immediately at t₀ = t
+        f_i = Vtilde_data.f_values[i]
+        g_i = Vtilde_data.g_values[i]
+        T_star = Vtilde_data.T_star_values[i]
+
+        T_star_at_t0[i] = T_star
+        α_f[i] = f_i       # disc_fallow = exp(0) = 1
+        α_g[i] = g_i
+
+        iw = spline_interp_weights(T_star, nodes)
+        W[i, iw.idx_lo] += 1 - iw.weight
+        W[i, iw.idx_hi] += iw.weight
+    end
+
+    A = Matrix{Float64}(I, M, M) - Diagonal(α_g) * W
+    v = A \ α_f
+
+    V_new_coeffs = make_spline(nodes, v)
+    V_values = copy(v)
+
+    # V = Ṽ when d* = 0
+    Vtilde_values = copy(v)
+
+    return (V_new_coeffs = V_new_coeffs, V_values = V_values,
+            Vtilde_values = Vtilde_values, d_values = d_values,
+            t0_values = t0_values, nodes = nodes)
+end
+
+
 # ──────────────────────────────────────────────────────────────────────────────
-# 5. Ṽ(t₀) = J(T*, t₀, t₀) as a Fourier series
+# 5. Ṽ(t₀) = J(T*, t₀, t₀) as a periodic linear spline
 # ──────────────────────────────────────────────────────────────────────────────
 
 """
     compute_Vtilde_at_nodes(τ_star_coeffs, V_coeffs, p; N=10)
 
 Compute Ṽ(t₀) = J(T*(t₀), t₀, t₀) — the expected present utility of a
-cycle stocked at t₀ with optimal harvest at T*(t₀) — at `2N+1` Fourier nodes
-in t₀ space, then fit a Fourier series.
+cycle stocked at t₀ with optimal harvest at T*(t₀) — at `2N+1` nodes
+in t₀ space, then fit a periodic linear spline.
 
 Also computes the f/g decomposition (Ṽ = f + g·V̄) at each node for use in
 the direct linear solve for V.
@@ -336,7 +346,7 @@ function compute_Vtilde_at_nodes(τ_star_coeffs, V_coeffs, p; N=10)
     T_star_values = Float64[]
 
     for t₀ in nodes
-        τ_star = fourier_eval(t₀, τ_star_coeffs)
+        τ_star = spline_eval(t₀, τ_star_coeffs)
         T_star = t₀ + τ_star
         push!(T_star_values, T_star)
 
@@ -346,11 +356,11 @@ function compute_Vtilde_at_nodes(τ_star_coeffs, V_coeffs, p; N=10)
         push!(g_values, decomp.g)
 
         # Full Ṽ = f + g·V(T*)
-        V_T = fourier_eval(T_star, V_coeffs)
+        V_T = spline_eval(T_star, V_coeffs)
         push!(Vtilde_values, decomp.f + decomp.g * V_T)
     end
 
-    Vtilde_coeffs = fit_fourier(nodes, Vtilde_values, N)
+    Vtilde_coeffs = make_spline(nodes, Vtilde_values)
     return (Vtilde_coeffs = Vtilde_coeffs, Vtilde_values = Vtilde_values,
             nodes = nodes, f_values = f_values, g_values = g_values,
             T_star_values = T_star_values)
@@ -362,34 +372,17 @@ end
 # ──────────────────────────────────────────────────────────────────────────────
 
 """
-    fourier_coeffs_vector(coeffs)
-
-Flatten Fourier coefficients `(a0, a, b)` into a single vector for
-convergence comparison: [a0, a₁, b₁, a₂, b₂, ...].
-"""
-function fourier_coeffs_vector(coeffs)
-    v = [coeffs.a0]
-    for k in eachindex(coeffs.a)
-        push!(v, coeffs.a[k])
-        push!(v, coeffs.b[k])
-    end
-    return v
-end
-
-"""
     damped_update(V_old_coeffs, V_new_coeffs; α=0.5)
 
-Blend old and new Fourier coefficients: V = α·V_new + (1−α)·V_old.
+Blend old and new spline nodal values: V = α·V_new + (1−α)·V_old.
 Damping stabilises the fixed-point iteration.
 
 # Arguments
 - `α` : damping parameter in (0, 1]. α = 1 means no damping (full update).
 """
 function damped_update(V_old_coeffs, V_new_coeffs; α=0.5)
-    a0 = α * V_new_coeffs.a0 + (1 - α) * V_old_coeffs.a0
-    a = α .* V_new_coeffs.a .+ (1 - α) .* V_old_coeffs.a
-    b = α .* V_new_coeffs.b .+ (1 - α) .* V_old_coeffs.b
-    return (a0 = a0, a = a, b = b)
+    new_values = α .* V_new_coeffs.values .+ (1 - α) .* V_old_coeffs.values
+    return make_spline(V_old_coeffs.nodes, new_values)
 end
 
 
@@ -409,47 +402,58 @@ end
         verbose = true
     )
 
-Solve the full seasonal aquaculture model by iterating between the harvest FOC,
-stocking FOC, and continuation value update until convergence.
+Solve the full seasonal aquaculture model in two phases.
 
 # Algorithm
 
+**Phase 1: Direct solve (f/g decomposition)**
+
 Each iteration:
 1. Given current `V_coeffs`, solve the harvest FOC at `2N+1` nodes to obtain
-   `τ_star_coeffs` (Fourier series for optimal cycle duration).
-2. Compute Ṽ(t₀) at `2N+1` nodes and fit a Fourier series (one `compute_Vtilde`
+   `τ_star_coeffs` (spline for optimal cycle duration).
+2. Compute Ṽ(t₀) at `2N+1` nodes and fit a spline (one `compute_Vtilde`
    call per node — the main expensive step).
-3. Solve the stocking FOC at `2N+1` nodes using the Ṽ Fourier approximation
-   to obtain `d*(t)` values (cheap — Fourier arithmetic only).
-4. For each V-node, use the pre-computed `d*(t)` to decompose the cycle value
-   and directly solve V(t) = e^{−δd*}·f/(1−e^{−δd*}·g).
-5. Fit a new Fourier series to the nodal V values.
-6. Apply damping: `V = α·V_new + (1−α)·V_old`.
-7. Check convergence via the sup-norm on Fourier coefficient changes.
+3. Solve the stocking FOC at `2N+1` nodes using the Ṽ spline approximation
+   to obtain `d*(t)` values (cheap — spline arithmetic only).
+4. For each node, use the pre-computed `d*(t)` to decompose the cycle value
+   and solve a linear system for V nodal values.
+5. Apply damping: `V = α·V_new + (1−α)·V_old`.
+6. Check convergence via the sup-norm on nodal value changes.
+
+**Phase 2: Bellman fixed-point refinement**
+
+Starting from the Phase 1 solution, iterate V via the full Bellman equation —
+evaluating V(s) at every quadrature point in the loss integral rather than
+using the f/g decomposition. Each Bellman iteration re-solves the harvest FOC
+(τ*) and stocking FOC (d*) given the current V, then updates V at each node
+via V(t) = e^{-δd*}·Ṽ(t₀*) where Ṽ is computed from the full objective.
+This eliminates the approximation error from the direct solve and captures
+within-cycle seasonality of V that the decomposition misses.
 
 # Arguments
 - `p`        : parameter set (must include seasonal Fourier coefficients for λ, m, k)
-- `N`        : number of Fourier harmonics (2N+1 nodes)
-- `V_init`   : initial V(t) Fourier coefficients; if `nothing`, uses a constant
+- `N`        : determines number of nodes (2N+1)
+- `V_init`   : initial V(t) spline coefficients; if `nothing`, uses a constant
                estimated from the model parameters
 - `max_iter` : maximum number of outer iterations
-- `tol`      : convergence tolerance on the sup-norm of Fourier coefficient changes
+- `tol`      : convergence tolerance on the sup-norm of nodal value changes
 - `damping`  : damping parameter α ∈ (0, 1]; smaller values are more conservative
-- `d_max`    : maximum fallow duration to consider in stocking FOC (days)
-- `verbose`  : if `true`, print iteration progress
+- `d_max`          : maximum fallow duration to consider in stocking FOC (days)
+- `force_no_fallow` : if `true`, force d*=0 at all nodes (immediate restocking)
+- `verbose`        : if `true`, print iteration progress
 
 # Returns
 A NamedTuple with fields:
-- `V_coeffs`            : converged Fourier coefficients for V(t)
-- `Vtilde_coeffs`       : converged Fourier coefficients for Ṽ(t₀) = J(T*,t₀,t₀)
-- `τ_star_coeffs`       : converged Fourier coefficients for τ*(t₀)
-- `V_values`            : V(t) at the V-nodes (last iteration)
-- `Vtilde_at_t0_nodes`  : Ṽ(t₀) evaluated at uniform Fourier nodes in t₀ space
-- `Vtilde_at_V_nodes`   : Ṽ(t₀*) at the V-nodes (from the value linkage step)
-- `d_values`            : optimal fallow durations d*(t) at the V-nodes
-- `t0_values`           : optimal stocking dates t₀*(t) at the V-nodes
+- `V_coeffs`            : converged spline for V(t) (nodes, values)
+- `Vtilde_coeffs`       : converged spline for Ṽ(t₀) = J(T*,t₀,t₀)
+- `τ_star_coeffs`       : converged spline for τ*(t₀)
+- `V_values`            : V(t) at the nodes (last iteration)
+- `Vtilde_at_t0_nodes`  : Ṽ(t₀) evaluated at uniform nodes in t₀ space
+- `Vtilde_at_V_nodes`   : Ṽ(t₀*) at the nodes (from the value linkage step)
+- `d_values`            : optimal fallow durations d*(t) at the nodes
+- `t0_values`           : optimal stocking dates t₀*(t) at the nodes
 - `τ_values`            : optimal cycle durations τ*(t₀) at the harvest nodes
-- `nodes`               : Fourier node positions (days)
+- `nodes`               : node positions (days)
 - `converged`           : whether the solver converged within `max_iter`
 - `iterations`          : number of iterations performed
 - `history`             : vector of (iteration, sup_norm_change) pairs
@@ -461,6 +465,7 @@ function solve_seasonal_model(p;
         tol = 1e-4,
         damping = 0.5,
         d_max = 180.0,
+        force_no_fallow = false,
         τ_max = 1500.0,
         verbose = true
     )
@@ -472,7 +477,8 @@ function solve_seasonal_model(p;
         verbose && println("Initialized V(t) = $V0 (constant)")
     else
         V_coeffs = V_init
-        verbose && println("Initialized V(t) from user-supplied coefficients (a0 = $(V_init.a0))")
+        V_mean = sum(V_init.values) / length(V_init.values)
+        verbose && println("Initialized V(t) from user-supplied spline (mean = $(round(V_mean; digits=2)))")
     end
 
     history = Tuple{Int, Float64}[]
@@ -488,29 +494,35 @@ function solve_seasonal_model(p;
 
         # ── Step 1: Solve harvest FOC at nodes ───────────────────────────────
         # Pass previous τ* as hint to guide root search and prevent jumps
-        # between different FOC crossings as V harmonics evolve.
+        # between different FOC crossings as V evolves.
         verbose && print("  Iteration $k: harvest FOC...")
         harvest_result = solve_harvest_at_nodes(V_coeffs, p; N=N, τ_max=τ_max,
                                                 τ_prev_coeffs=τ_star_coeffs)
         τ_star_coeffs = harvest_result.τ_star_coeffs
         τ_values = harvest_result.τ_values
-        verbose && print(" τ̄=$(round(τ_star_coeffs.a0; digits=1))")
+        τ_mean = sum(τ_star_coeffs.values) / length(τ_star_coeffs.values)
+        verbose && print(" τ̄=$(round(τ_mean; digits=1))")
 
-        # ── Step 2: Compute Ṽ(t₀) Fourier series ─────────────────────────────
+        # ── Step 2: Compute Ṽ(t₀) spline ─────────────────────────────────────
         Vtilde_iter = compute_Vtilde_at_nodes(τ_star_coeffs, V_coeffs, p; N=N)
-        verbose && print(" Ṽ̄=$(round(Vtilde_iter.Vtilde_coeffs.a0; digits=0))")
+        Vt_mean = sum(Vtilde_iter.Vtilde_coeffs.values) / length(Vtilde_iter.Vtilde_coeffs.values)
+        verbose && print(" Ṽ̄=$(round(Vt_mean; digits=0))")
 
         # ── Step 3–4: Solve stocking FOC (cheap) then update V(t) ─────────
-        V_result = update_V_all_nodes(τ_star_coeffs, Vtilde_iter.Vtilde_coeffs, Vtilde_iter, p; N=N, d_max=d_max)
+        if force_no_fallow
+            V_result = update_V_all_nodes_no_fallow(τ_star_coeffs, Vtilde_iter, p; N=N)
+        else
+            V_result = update_V_all_nodes(τ_star_coeffs, Vtilde_iter.Vtilde_coeffs, Vtilde_iter, p; N=N, d_max=d_max)
+        end
 
         # ── Damped V update ──────────────────────────────────────────────────
         V_new_coeffs = damped_update(V_coeffs, V_result.V_new_coeffs; α=damping)
 
         # ── Convergence check ────────────────────────────────────────────────
-        Δ = maximum(abs.(fourier_coeffs_vector(V_new_coeffs) .-
-                         fourier_coeffs_vector(V_coeffs)))
+        Δ = maximum(abs.(V_new_coeffs.values .- V_coeffs.values))
         push!(history, (k, Δ))
-        verbose && println(" V̄=$(round(V_new_coeffs.a0; digits=0)) ΔV=$(round(Δ; sigdigits=4))")
+        V_bar = sum(V_new_coeffs.values) / length(V_new_coeffs.values)
+        verbose && println(" V̄=$(round(V_bar; digits=0)) ΔV=$(round(Δ; sigdigits=4))")
 
         V_coeffs = V_new_coeffs
 
@@ -538,25 +550,127 @@ function solve_seasonal_model(p;
                 "(final ΔV = $(round(history[end][2]; sigdigits=4)))")
     end
 
-    # ── Compute Ṽ(t₀) Fourier series at convergence ──────────────────────────
-    verbose && print("  Computing Ṽ(t₀) Fourier series...")
+    direct_iter = iter
+    direct_converged = converged
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Phase 2: Full Bellman fixed-point iterations
+    # ══════════════════════════════════════════════════════════════════════════
+    # The direct solve (f/g decomposition) approximates V(T*) as constant
+    # within each cycle evaluation. The full Bellman evaluates V(s) at every
+    # quadrature point in the loss integral, capturing seasonality that the
+    # decomposition misses. We iterate with τ* and d* fixed from Phase 1.
+
+    verbose && println("\n  Phase 2: Bellman fixed-point refinement...")
+
+    bellman_history = Tuple{Int, Float64}[]
+    bellman_converged = false
+    bellman_iter = 0
+
+    nodes = V_result.nodes
+    d_values = V_result.d_values
+    t0_values = V_result.t0_values
+    Vtilde_bellman = zeros(length(nodes))
+    M = length(nodes)
+
+    for k in 1:max_iter
+        bellman_iter = k
+
+        # ── Re-solve harvest FOC (τ*) given current V ─────────────────────
+        verbose && print("    Bellman $k: harvest FOC...")
+        harvest_result = solve_harvest_at_nodes(V_coeffs, p; N=N, τ_max=τ_max,
+                                                τ_prev_coeffs=τ_star_coeffs)
+        τ_star_coeffs = harvest_result.τ_star_coeffs
+        τ_values = harvest_result.τ_values
+        τ_mean = sum(τ_star_coeffs.values) / length(τ_star_coeffs.values)
+        verbose && print(" τ̄=$(round(τ_mean; digits=1))")
+
+        # ── Re-solve stocking FOC (d*) ────────────────────────────────────
+        if force_no_fallow
+            d_values = zeros(M)
+        else
+            # Compute Ṽ spline for the stocking FOC evaluation
+            Vtilde_iter = compute_Vtilde_at_nodes(τ_star_coeffs, V_coeffs, p; N=N)
+            stocking = solve_stocking_at_V_nodes(Vtilde_iter.Vtilde_coeffs, p; N=N, d_max=d_max)
+            d_values = stocking.d_values
+        end
+
+        # ── Bellman V update: V(tᵢ) = e^{-δdᵢ}·Ṽ(t₀ᵢ) ──────────────────
+        V_new_values = zeros(M)
+        t0_values = zeros(M)
+
+        for (i, t) in enumerate(nodes)
+            d_star = d_values[i]
+            t0_star = t + d_star
+            t0_values[i] = t0_star
+            τ_star = spline_eval(t0_star, τ_star_coeffs)
+            T_star = t0_star + τ_star
+
+            Vt = compute_Vtilde(t0_star, T_star, V_coeffs, p)
+            Vtilde_bellman[i] = Vt
+            V_new_values[i] = exp(-p.δ * d_star) * Vt
+        end
+
+        V_new_coeffs = make_spline(nodes, V_new_values)
+        V_new_coeffs = damped_update(V_coeffs, V_new_coeffs; α=damping)
+
+        Δ = maximum(abs.(V_new_coeffs.values .- V_coeffs.values))
+        push!(bellman_history, (k, Δ))
+        V_bar = sum(V_new_coeffs.values) / length(V_new_coeffs.values)
+        verbose && println(" V̄=$(round(V_bar; digits=0)) ΔV=$(round(Δ; sigdigits=4))")
+
+        V_coeffs = V_new_coeffs
+
+        if Δ < tol
+            bellman_converged = true
+            verbose && println("  Bellman converged after $k iterations (ΔV = $(round(Δ; sigdigits=4)) < $tol)")
+            break
+        end
+
+        # Divergence detection
+        if length(bellman_history) >= 4
+            recent = [h[2] for h in bellman_history[end-2:end]]
+            if recent[2] > recent[1] && recent[3] > recent[2]
+                best_Δ = minimum(h[2] for h in bellman_history)
+                bellman_converged = true
+                verbose && println("  Bellman converged (divergence at iter $k; " *
+                                  "best ΔV = $(round(best_Δ; sigdigits=4)))")
+                break
+            end
+        end
+    end
+
+    if !bellman_converged && verbose
+        println("  WARNING: Bellman did not converge after $max_iter iterations " *
+                "(final ΔV = $(round(bellman_history[end][2]; sigdigits=4)))")
+    end
+
+    total_iter = direct_iter + bellman_iter
+    converged = direct_converged && bellman_converged
+
+    # ── Compute final Ṽ(t₀) spline ───────────────────────────────────────────
+    verbose && print("  Computing Ṽ(t₀) spline...")
     Vtilde_result = compute_Vtilde_at_nodes(τ_star_coeffs, V_coeffs, p; N=N)
-    verbose && println(" Ṽ̄ = $(round(Vtilde_result.Vtilde_coeffs.a0; digits=2))")
+    Vt_mean = sum(Vtilde_result.Vtilde_coeffs.values) / length(Vtilde_result.Vtilde_coeffs.values)
+    verbose && println(" Ṽ̄ = $(round(Vt_mean; digits=2))")
+
+    # Combine histories
+    full_history = vcat(history, [(direct_iter + k, Δ) for (k, Δ) in bellman_history])
 
     return (
         V_coeffs            = V_coeffs,
         Vtilde_coeffs       = Vtilde_result.Vtilde_coeffs,
         τ_star_coeffs       = τ_star_coeffs,
-        V_values            = V_result.V_values,
+        V_values            = V_coeffs.values,
         Vtilde_at_t0_nodes  = Vtilde_result.Vtilde_values,
-        Vtilde_at_V_nodes   = V_result.Vtilde_values,
-        d_values            = V_result.d_values,
-        t0_values           = V_result.t0_values,
+        Vtilde_at_V_nodes   = Vtilde_bellman,
+        d_values            = d_values,
+        t0_values           = t0_values,
         τ_values            = τ_values,
-        nodes               = V_result.nodes,
+        nodes               = nodes,
         converged           = converged,
-        iterations          = iter,
-        history             = history,
+        iterations          = total_iter,
+        history             = full_history,
     )
 end
 
@@ -623,18 +737,18 @@ re-solving the stocking FOC at each grid point.
 # Returns
 A NamedTuple with:
 - `t_grid`             : uniform grid of calendar dates
-- `V_grid`             : V(t) evaluated from Fourier series
-- `Vtilde_grid`        : Ṽ(t₀) = J(T*,t₀,t₀) evaluated from Fourier series
-- `τ_star_grid`        : τ*(t₀) evaluated from Fourier series
+- `V_grid`             : V(t) evaluated from spline
+- `Vtilde_grid`        : Ṽ(t₀) = J(T*,t₀,t₀) evaluated from spline
+- `τ_star_grid`        : τ*(t₀) evaluated from spline
 - `d_grid`             : fallow duration d*(t) linearly interpolated from nodes
 - `V_recomputed_grid`  : V(t) recomputed from interpolated d* and value linkage
 - `Vtilde_linkage_grid`: Ṽ(t₀*) at the optimal stocking date for each end-of-cycle t
 """
 function evaluate_solution(result, p; n_grid=200)
     t_grid = collect(range(0.0, PERIOD * (1 - 1/n_grid), length=n_grid))
-    V_grid = [fourier_eval(t, result.V_coeffs) for t in t_grid]
-    Vtilde_grid = [fourier_eval(t, result.Vtilde_coeffs) for t in t_grid]
-    τ_star_grid = [fourier_eval(t, result.τ_star_coeffs) for t in t_grid]
+    V_grid = [spline_eval(t, result.V_coeffs) for t in t_grid]
+    Vtilde_grid = [spline_eval(t, result.Vtilde_coeffs) for t in t_grid]
+    τ_star_grid = [spline_eval(t, result.τ_star_coeffs) for t in t_grid]
 
     d_grid = Float64[]
     V_recomputed_grid = Float64[]

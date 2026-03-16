@@ -23,13 +23,11 @@ V_hom = insurance_value(T_hom, I_sol_hom, hom_p)
 test_p = merge(default_params, (γ = 0.1, Y_MIN = 1000.0))
 A_perturb = 0.01 * V_hom
 
-# V_coeffs needs enough harmonics for the largest N we'll test
+# V_coeffs as a periodic linear spline with enough nodes for the largest N
 N_max = 30
-V_coeffs = (
-    a0 = V_hom,
-    a  = vcat([A_perturb], zeros(N_max - 1)),
-    b  = zeros(N_max),
-)
+V_nodes = fourier_nodes(N_max)
+V_vals = [V_hom + A_perturb * sin(2π * t / 365.0) for t in V_nodes]
+V_coeffs = make_spline(V_nodes, V_vals)
 
 # ── Compute "exact" solution on 100-point grid ──────────────────────────────
 println("Computing exact solution on 100-point grid...")
@@ -50,9 +48,9 @@ for N in N_values
 
     τ_star_coeffs = res.τ_star_coeffs
 
-    # Evaluate Fourier approximation at exact grid points
-    τ_fourier = [fourier_eval(t, τ_star_coeffs) for t in exact.t₀_grid]
-    errors = τ_fourier .- exact.τ_grid
+    # Evaluate spline approximation at exact grid points
+    τ_spline = [spline_eval(t, τ_star_coeffs) for t in exact.t₀_grid]
+    errors = τ_spline .- exact.τ_grid
     mse = sum(errors .^ 2) / length(errors)
     max_err = maximum(abs.(errors))
 

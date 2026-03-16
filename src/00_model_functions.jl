@@ -447,3 +447,124 @@ function fourier_derivative(t, coeffs)
     end
     return s
 end
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 8. Periodic linear spline helpers
+#
+#    Used to represent V(t), Ṽ(t₀), and τ*(t₀) as piecewise-linear periodic
+#    functions on [0, 365). Unlike Fourier series, linear splines can represent
+#    discontinuities and sharp features without Gibbs ringing.
+#
+#    Each spline is stored as a NamedTuple (nodes, values) where `nodes` are
+#    sorted positions in [0, 365) and `values` are the function values there.
+# ──────────────────────────────────────────────────────────────────────────────
+
+"""
+    make_spline(nodes, values)
+
+Create a periodic linear spline NamedTuple from nodes and values.
+"""
+make_spline(nodes, values) = (nodes = collect(Float64, nodes), values = collect(Float64, values))
+
+"""
+    spline_eval(t, coeffs)
+
+Evaluate a periodic linear spline on [0, 365) at calendar day `t`.
+
+# Arguments
+- `t`      : calendar time (days)
+- `coeffs` : `(nodes, values)` where `nodes` are sorted positions in [0, 365)
+              and `values` are the function values at those nodes.
+"""
+function spline_eval(t, coeffs)
+    nodes = coeffs.nodes
+    vals = coeffs.values
+    t_mod = mod(t, 365.0)
+    n = length(nodes)
+
+    idx = searchsortedlast(nodes, t_mod)
+
+    if idx == 0 || idx == n
+        t_lo = nodes[end]
+        t_hi = nodes[1] + 365.0
+        v_lo = vals[end]
+        v_hi = vals[1]
+        t_eff = idx == 0 ? t_mod + 365.0 : t_mod
+    else
+        t_lo = nodes[idx]
+        t_hi = nodes[idx + 1]
+        v_lo = vals[idx]
+        v_hi = vals[idx + 1]
+        t_eff = t_mod
+    end
+
+    frac = (t_eff - t_lo) / (t_hi - t_lo)
+    return v_lo + frac * (v_hi - v_lo)
+end
+
+"""
+    spline_derivative(t, coeffs)
+
+Evaluate the derivative (piecewise constant slope) of a periodic linear spline.
+At node boundaries, returns the slope of the interval containing `t`.
+
+# Arguments
+- `t`      : calendar time (days)
+- `coeffs` : `(nodes, values)` periodic spline
+"""
+function spline_derivative(t, coeffs)
+    nodes = coeffs.nodes
+    vals = coeffs.values
+    t_mod = mod(t, 365.0)
+    n = length(nodes)
+
+    idx = searchsortedlast(nodes, t_mod)
+
+    if idx == 0 || idx == n
+        t_lo = nodes[end]
+        t_hi = nodes[1] + 365.0
+        v_lo = vals[end]
+        v_hi = vals[1]
+    else
+        t_lo = nodes[idx]
+        t_hi = nodes[idx + 1]
+        v_lo = vals[idx]
+        v_hi = vals[idx + 1]
+    end
+
+    return (v_hi - v_lo) / (t_hi - t_lo)
+end
+
+"""
+    spline_interp_weights(t, nodes)
+
+Return interpolation indices and weight for a periodic linear spline evaluation.
+
+# Returns
+`(idx_lo, idx_hi, weight)` such that:
+    spline(t) = (1 - weight) * values[idx_lo] + weight * values[idx_hi]
+"""
+function spline_interp_weights(t, nodes)
+    t_mod = mod(t, 365.0)
+    n = length(nodes)
+
+    idx = searchsortedlast(nodes, t_mod)
+
+    if idx == 0 || idx == n
+        t_lo = nodes[end]
+        t_hi = nodes[1] + 365.0
+        idx_lo = n
+        idx_hi = 1
+        t_eff = idx == 0 ? t_mod + 365.0 : t_mod
+    else
+        t_lo = nodes[idx]
+        t_hi = nodes[idx + 1]
+        idx_lo = idx
+        idx_hi = idx + 1
+        t_eff = t_mod
+    end
+
+    weight = (t_eff - t_lo) / (t_hi - t_lo)
+    return (idx_lo = idx_lo, idx_hi = idx_hi, weight = weight)
+end

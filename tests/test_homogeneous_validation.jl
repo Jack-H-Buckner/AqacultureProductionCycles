@@ -74,13 +74,13 @@ end
 
 # ──────────────────────────────────────────────────────────────────────────
 @testset "Harvest time τ*(t₀) ≈ T* (constant)" begin
-    # The Fourier series for τ* should be approximately constant = T*_hom
-    τ_mean = result.τ_star_coeffs.a0
+    # The spline for τ* should be approximately constant = T*_hom
     τ_values = result.τ_values
+    τ_mean = sum(result.τ_star_coeffs.values) / length(result.τ_star_coeffs.values)
 
     # Mean should match homogeneous T*
     rel_err_mean = abs(τ_mean - T_star_hom) / T_star_hom
-    println("  τ̄ (Fourier a0) = $(round(τ_mean; digits=2)) days")
+    println("  τ̄ (spline mean) = $(round(τ_mean; digits=2)) days")
     println("  T* (homogeneous) = $(round(T_star_hom; digits=2)) days")
     println("  Relative error = $(round(rel_err_mean * 100; digits=4))%")
     @test rel_err_mean < 0.01  # < 1% error
@@ -90,20 +90,20 @@ end
     println("  Max nodal relative error = $(round(max_node_err * 100; digits=4))%")
     @test max_node_err < 0.01
 
-    # Higher harmonics should be near zero
-    harmonic_energy = sqrt(sum(result.τ_star_coeffs.a .^ 2 .+ result.τ_star_coeffs.b .^ 2))
-    println("  Harmonic energy (should be ≈ 0) = $(round(harmonic_energy; sigdigits=4))")
-    @test harmonic_energy < 1.0  # < 1 day of variation
+    # Variation should be near zero (constant in homogeneous case)
+    τ_range = maximum(result.τ_star_coeffs.values) - minimum(result.τ_star_coeffs.values)
+    println("  τ* range (should be ≈ 0) = $(round(τ_range; sigdigits=4))")
+    @test τ_range < 1.0  # < 1 day of variation
 end
 
 # ──────────────────────────────────────────────────────────────────────────
 @testset "Continuation value V(t) ≈ V* (constant)" begin
-    V_mean = result.V_coeffs.a0
     V_values = result.V_values
+    V_mean = sum(result.V_coeffs.values) / length(result.V_coeffs.values)
 
     # Mean should match homogeneous V*
     rel_err_mean = abs(V_mean - V_hom) / abs(V_hom)
-    println("  V̄ (Fourier a0) = $(round(V_mean; digits=2))")
+    println("  V̄ (spline mean) = $(round(V_mean; digits=2))")
     println("  V* (homogeneous) = $(round(V_hom; digits=2))")
     println("  Relative error = $(round(rel_err_mean * 100; digits=4))%")
     @test rel_err_mean < 0.01  # < 1% error
@@ -113,11 +113,11 @@ end
     println("  Max nodal relative error = $(round(max_node_err * 100; digits=4))%")
     @test max_node_err < 0.01
 
-    # Higher harmonics should be near zero
-    harmonic_energy = sqrt(sum(result.V_coeffs.a .^ 2 .+ result.V_coeffs.b .^ 2))
-    rel_harmonic = harmonic_energy / abs(V_mean)
-    println("  Relative harmonic energy = $(round(rel_harmonic * 100; digits=4))%")
-    @test rel_harmonic < 0.01
+    # Variation should be near zero (constant in homogeneous case)
+    V_range = maximum(result.V_coeffs.values) - minimum(result.V_coeffs.values)
+    rel_range = V_range / abs(V_mean)
+    println("  Relative range = $(round(rel_range * 100; digits=4))%")
+    @test rel_range < 0.01
 end
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -139,30 +139,30 @@ end
 
 # ──────────────────────────────────────────────────────────────────────────
 @testset "Ṽ(t₀) ≈ constant" begin
-    Vtilde_mean = result.Vtilde_coeffs.a0
     Vtilde_values = result.Vtilde_at_t0_nodes
+    Vtilde_mean = sum(result.Vtilde_coeffs.values) / length(result.Vtilde_coeffs.values)
 
     # Ṽ should be approximately constant
     Vtilde_range = maximum(Vtilde_values) - minimum(Vtilde_values)
     rel_range = Vtilde_range / abs(Vtilde_mean)
-    println("  Ṽ̄ (Fourier a0) = $(round(Vtilde_mean; digits=2))")
+    println("  Ṽ̄ (spline mean) = $(round(Vtilde_mean; digits=2))")
     println("  Ṽ range = $(round(Vtilde_range; sigdigits=4))")
     println("  Relative range = $(round(rel_range * 100; digits=4))%")
     @test rel_range < 0.01
 
-    # Higher harmonics should be near zero
-    harmonic_energy = sqrt(sum(result.Vtilde_coeffs.a .^ 2 .+ result.Vtilde_coeffs.b .^ 2))
-    rel_harmonic = harmonic_energy / abs(Vtilde_mean)
-    println("  Relative harmonic energy = $(round(rel_harmonic * 100; digits=4))%")
-    @test rel_harmonic < 0.01
+    # Variation should be near zero
+    Vt_range = maximum(result.Vtilde_coeffs.values) - minimum(result.Vtilde_coeffs.values)
+    rel_vt_range = Vt_range / abs(Vtilde_mean)
+    println("  Relative spline range = $(round(rel_vt_range * 100; digits=4))%")
+    @test rel_vt_range < 0.01
 end
 
 # ──────────────────────────────────────────────────────────────────────────
 @testset "Value linkage: V = Ṽ when d* = 0" begin
     # When d* = 0, V(t) = e^{-δ·0} · Ṽ(t) = Ṽ(t)
-    # So the V and Ṽ Fourier series should be nearly identical
-    V_mean = result.V_coeffs.a0
-    Vtilde_mean = result.Vtilde_coeffs.a0
+    # So the V and Ṽ splines should be nearly identical
+    V_mean = sum(result.V_coeffs.values) / length(result.V_coeffs.values)
+    Vtilde_mean = sum(result.Vtilde_coeffs.values) / length(result.Vtilde_coeffs.values)
 
     rel_diff = abs(V_mean - Vtilde_mean) / abs(V_mean)
     println("  V̄ = $(round(V_mean; digits=2))")
@@ -188,14 +188,16 @@ end
     println("  Converged in $(result_cold.iterations) iterations")
 
     # V should match homogeneous V* within 1%
-    V_err = abs(result_cold.V_coeffs.a0 - V_hom) / abs(V_hom)
-    println("  V̄ = $(round(result_cold.V_coeffs.a0; digits=2)), " *
+    V_mean = sum(result_cold.V_coeffs.values) / length(result_cold.V_coeffs.values)
+    V_err = abs(V_mean - V_hom) / abs(V_hom)
+    println("  V̄ = $(round(V_mean; digits=2)), " *
             "V* = $(round(V_hom; digits=2)), error = $(round(V_err * 100; digits=4))%")
     @test V_err < 0.01
 
     # τ should match homogeneous T* within 1%
-    τ_err = abs(result_cold.τ_star_coeffs.a0 - T_star_hom) / T_star_hom
-    println("  τ̄ = $(round(result_cold.τ_star_coeffs.a0; digits=2)), " *
+    τ_mean = sum(result_cold.τ_star_coeffs.values) / length(result_cold.τ_star_coeffs.values)
+    τ_err = abs(τ_mean - T_star_hom) / T_star_hom
+    println("  τ̄ = $(round(τ_mean; digits=2)), " *
             "T* = $(round(T_star_hom; digits=2)), error = $(round(τ_err * 100; digits=4))%")
     @test τ_err < 0.01
 

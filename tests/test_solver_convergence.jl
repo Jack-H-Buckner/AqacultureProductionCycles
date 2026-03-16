@@ -9,9 +9,9 @@ seasonal solver should converge to:
 - V(t) = V_analytical (constant across all t)
 - τ*(t₀) = T*_analytical (constant across all t₀)
 - d*(t) = 0 for all t (immediate restocking)
-- All non-constant Fourier coefficients ≈ 0
+- All nodal values approximately equal (no seasonal variation)
 
-This exercises the full numerical machinery: iterative convergence, Fourier
+This exercises the full numerical machinery: iterative convergence, spline
 representation, survival/cost integrals, coupled FOCs, and value linkage.
 See README § "Numerical Validation Procedure".
 """
@@ -74,15 +74,14 @@ println()
     println("  Converged in $(result.iterations) iterations")
 
     # ── V(t) should be constant ──────────────────────────────────────────
-    V_mean = result.V_coeffs.a0
-    V_harmonics = vcat(result.V_coeffs.a, result.V_coeffs.b)
-    max_harmonic_V = maximum(abs.(V_harmonics))
+    V_mean = sum(result.V_coeffs.values) / length(result.V_coeffs.values)
+    V_range = maximum(result.V_coeffs.values) - minimum(result.V_coeffs.values)
 
-    println("  V Fourier: a0 = $(round(V_mean; digits=2)), " *
-            "max |harmonic| = $(round(max_harmonic_V; sigdigits=3))")
+    println("  V spline: mean = $(round(V_mean; digits=2)), " *
+            "range = $(round(V_range; sigdigits=3))")
 
-    # Non-constant coefficients should be negligible relative to a0
-    @test max_harmonic_V / abs(V_mean) < 0.01
+    # Nodal values should be nearly constant (range negligible relative to mean)
+    @test V_range / abs(V_mean) < 0.01
 
     # ── V(t) ≈ V_analytical ──────────────────────────────────────────────
     V_rel_error = abs(V_mean - V_analytical) / abs(V_analytical)
@@ -92,14 +91,13 @@ println()
     @test V_rel_error < 0.05  # within 5%
 
     # ── τ*(t₀) should be constant ────────────────────────────────────────
-    τ_mean = result.τ_star_coeffs.a0
-    τ_harmonics = vcat(result.τ_star_coeffs.a, result.τ_star_coeffs.b)
-    max_harmonic_τ = maximum(abs.(τ_harmonics))
+    τ_mean = sum(result.τ_star_coeffs.values) / length(result.τ_star_coeffs.values)
+    τ_range = maximum(result.τ_star_coeffs.values) - minimum(result.τ_star_coeffs.values)
 
-    println("  τ* Fourier: a0 = $(round(τ_mean; digits=2)), " *
-            "max |harmonic| = $(round(max_harmonic_τ; sigdigits=3))")
+    println("  τ* spline: mean = $(round(τ_mean; digits=2)), " *
+            "range = $(round(τ_range; sigdigits=3))")
 
-    @test max_harmonic_τ / abs(τ_mean) < 0.01
+    @test τ_range / abs(τ_mean) < 0.01
 
     # ── τ* ≈ T*_analytical ───────────────────────────────────────────────
     τ_rel_error = abs(τ_mean - T_star_analytical) / T_star_analytical
@@ -114,14 +112,13 @@ println()
     @test max_d < 1.0  # effectively zero fallow
 
     # ── Ṽ(t₀) should be constant and ≈ V ─────────────────────────────────
-    Vtilde_mean = result.Vtilde_coeffs.a0
-    Vtilde_harmonics = vcat(result.Vtilde_coeffs.a, result.Vtilde_coeffs.b)
-    max_harmonic_Vt = maximum(abs.(Vtilde_harmonics))
+    Vtilde_mean = sum(result.Vtilde_coeffs.values) / length(result.Vtilde_coeffs.values)
+    Vtilde_range = maximum(result.Vtilde_coeffs.values) - minimum(result.Vtilde_coeffs.values)
 
-    println("  Ṽ Fourier: a0 = $(round(Vtilde_mean; digits=2)), " *
-            "max |harmonic| = $(round(max_harmonic_Vt; sigdigits=3))")
+    println("  Ṽ spline: mean = $(round(Vtilde_mean; digits=2)), " *
+            "range = $(round(Vtilde_range; sigdigits=3))")
 
-    @test max_harmonic_Vt / abs(Vtilde_mean) < 0.01
+    @test Vtilde_range / abs(Vtilde_mean) < 0.01
 
     # With d*=0, V(t) = Ṽ(t₀), so Ṽ_mean ≈ V_mean
     Vtilde_V_gap = abs(Vtilde_mean - V_mean) / abs(V_mean)
@@ -129,16 +126,16 @@ println()
     @test Vtilde_V_gap < 0.05
 
     # ── V should be constant at all nodes ────────────────────────────────
-    V_range = maximum(result.V_values) - minimum(result.V_values)
-    V_cv = V_range / abs(V_mean)
-    println("  V range at nodes: $(round(V_range; sigdigits=3)), " *
+    V_node_range = maximum(result.V_values) - minimum(result.V_values)
+    V_cv = V_node_range / abs(V_mean)
+    println("  V range at nodes: $(round(V_node_range; sigdigits=3)), " *
             "CV = $(round(V_cv * 100; digits=4))%")
     @test V_cv < 0.01
 
     # ── τ* should be constant at all nodes ───────────────────────────────
-    τ_range = maximum(result.τ_values) - minimum(result.τ_values)
-    τ_cv = τ_range / abs(τ_mean)
-    println("  τ* range at nodes: $(round(τ_range; sigdigits=3)), " *
+    τ_node_range = maximum(result.τ_values) - minimum(result.τ_values)
+    τ_cv = τ_node_range / abs(τ_mean)
+    println("  τ* range at nodes: $(round(τ_node_range; sigdigits=3)), " *
             "CV = $(round(τ_cv * 100; digits=4))%")
     @test τ_cv < 0.01
 end
@@ -240,7 +237,7 @@ end
     for (i, t) in enumerate(nodes)
         d_star = result.d_values[i]
         t0_star = t + d_star
-        τ_star = fourier_eval(t0_star, τ_star_coeffs)
+        τ_star = spline_eval(t0_star, τ_star_coeffs)
         T_star = t0_star + τ_star
 
         # Full Bellman Ṽ: evaluates V(s) inside the loss integral at every s
@@ -249,21 +246,21 @@ end
         # V from full Bellman via value linkage
         V_full = exp(-seasonal_hom_params.δ * d_star) * Vtilde_full
 
-        # V from the converged Fourier series
-        V_fourier = fourier_eval(t, V_coeffs)
+        # V from the converged spline
+        V_spline = spline_eval(t, V_coeffs)
 
-        # Ṽ from the converged Fourier series
-        Vtilde_fourier = fourier_eval(t0_star, result.Vtilde_coeffs)
+        # Ṽ from the converged spline
+        Vtilde_spline = spline_eval(t0_star, result.Vtilde_coeffs)
 
-        V_err = abs(V_full - V_fourier) / abs(V_fourier)
-        Vtilde_err = abs(Vtilde_full - Vtilde_fourier) / abs(Vtilde_fourier)
+        V_err = abs(V_full - V_spline) / abs(V_spline)
+        Vtilde_err = abs(Vtilde_full - Vtilde_spline) / abs(Vtilde_spline)
 
         max_V_error = max(max_V_error, V_err)
         max_Vtilde_error = max(max_Vtilde_error, Vtilde_err)
     end
 
-    println("  Max relative error in Ṽ (full Bellman vs Fourier): $(round(max_Vtilde_error * 100; digits=6))%")
-    println("  Max relative error in V (full Bellman vs Fourier):  $(round(max_V_error * 100; digits=6))%")
+    println("  Max relative error in Ṽ (full Bellman vs spline): $(round(max_Vtilde_error * 100; digits=6))%")
+    println("  Max relative error in V (full Bellman vs spline):  $(round(max_V_error * 100; digits=6))%")
 
     @test max_Vtilde_error < 1e-4
     @test max_V_error < 1e-4
@@ -302,7 +299,7 @@ end
     for (i, t) in enumerate(nodes)
         d_star = result.d_values[i]
         t0_star = t + d_star
-        τ_star = fourier_eval(t0_star, τ_star_coeffs)
+        τ_star = spline_eval(t0_star, τ_star_coeffs)
         T_star = t0_star + τ_star
 
         # Full Bellman Ṽ: evaluates V(s) inside the loss integral at every s
@@ -311,21 +308,21 @@ end
         # V from full Bellman via value linkage
         V_full = exp(-seasonal_p.δ * d_star) * Vtilde_full
 
-        # V from the converged Fourier series
-        V_fourier = fourier_eval(t, V_coeffs)
+        # V from the converged spline
+        V_spline = spline_eval(t, V_coeffs)
 
-        # Ṽ from the converged Fourier series
-        Vtilde_fourier = fourier_eval(t0_star, result.Vtilde_coeffs)
+        # Ṽ from the converged spline
+        Vtilde_spline = spline_eval(t0_star, result.Vtilde_coeffs)
 
-        V_err = abs(V_full - V_fourier) / abs(V_fourier)
-        Vtilde_err = abs(Vtilde_full - Vtilde_fourier) / abs(Vtilde_fourier)
+        V_err = abs(V_full - V_spline) / abs(V_spline)
+        Vtilde_err = abs(Vtilde_full - Vtilde_spline) / abs(Vtilde_spline)
 
         max_V_error = max(max_V_error, V_err)
         max_Vtilde_error = max(max_Vtilde_error, Vtilde_err)
     end
 
-    println("  Max relative error in Ṽ (full Bellman vs Fourier): $(round(max_Vtilde_error * 100; digits=6))%")
-    println("  Max relative error in V (full Bellman vs Fourier):  $(round(max_V_error * 100; digits=6))%")
+    println("  Max relative error in Ṽ (full Bellman vs spline): $(round(max_Vtilde_error * 100; digits=6))%")
+    println("  Max relative error in V (full Bellman vs spline):  $(round(max_V_error * 100; digits=6))%")
 
     # The f/g decomposition approximates ∫ S·λ·e^{-δs}·V(s) ds ≈ g·V(T*),
     # so with seasonal V(s) there is a non-zero discrepancy. These tolerances
