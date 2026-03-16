@@ -63,7 +63,7 @@ println()
 @testset "Full iterative solver converges" begin
     println("  Running seasonal solver with constant parameters...")
     result = solve_seasonal_model(seasonal_hom_params;
-        N        = 10,
+        N        = 20,
         max_iter = 200,
         tol      = 1e-4,
         damping  = 0.5,
@@ -147,7 +147,7 @@ end
 @testset "Convergence history" begin
     println("  Running solver to check convergence rate...")
     result = solve_seasonal_model(seasonal_hom_params;
-        N        = 10,
+        N        = 20,
         max_iter = 200,
         tol      = 1e-6,
         damping  = 0.5,
@@ -175,7 +175,7 @@ end
     mkpath(outdir)
 
     result = solve_seasonal_model(seasonal_hom_params;
-        N        = 10,
+        N        = 20,
         max_iter = 200,
         tol      = 1e-6,
         damping  = 0.5,
@@ -204,6 +204,134 @@ end
     println("  Wrote homogeneous_validation.csv ($(nrow(node_df)) rows)")
 
     @test true
+end
+
+# ──────────────────────────────────────────────────────────────────────────
+@testset "Fixed-point consistency: V(t) = e^{-δd}·Ṽ(t₀*) via full Bellman" begin
+    # After the direct linear solver converges, verify that the solution is
+    # also a fixed point of the exact Bellman equation:
+    #   Ṽ(t₀) = S·e^{-δτ}·[u(Y_H) + V(T*)] + ∫ S·λ·e^{-δs}·[u(Y_L) + V(s)] ds
+    # The direct solver uses an f/g decomposition (Ṽ ≈ f + g·V(T*)) that
+    # collapses the integral over V(s) to a single evaluation at T*. This test
+    # checks that the full integral (which evaluates V(s) at every loss time)
+    # produces the same Ṽ, confirming the approximation is valid at convergence.
+
+    println("  Running seasonal solver for fixed-point check...")
+    result = solve_seasonal_model(seasonal_hom_params;
+        N        = 20,
+        max_iter = 200,
+        tol      = 1e-6,
+        damping  = 0.5,
+        verbose  = false,
+    )
+    @test result.converged
+
+    # Recompute Ṽ at each node using the full Bellman equation
+    # (compute_Vtilde integrates V(s) at every quadrature point in the loss
+    # integral, unlike compute_Vtilde_decomposed which factors out V(T*))
+    nodes = result.nodes
+    V_coeffs = result.V_coeffs
+    τ_star_coeffs = result.τ_star_coeffs
+
+    println("  Recomputing Ṽ(t₀) via full Bellman at $(length(nodes)) nodes...")
+    max_V_error = 0.0
+    max_Vtilde_error = 0.0
+
+    for (i, t) in enumerate(nodes)
+        d_star = result.d_values[i]
+        t0_star = t + d_star
+        τ_star = fourier_eval(t0_star, τ_star_coeffs)
+        T_star = t0_star + τ_star
+
+        # Full Bellman Ṽ: evaluates V(s) inside the loss integral at every s
+        Vtilde_full = compute_Vtilde(t0_star, T_star, V_coeffs, seasonal_hom_params)
+
+        # V from full Bellman via value linkage
+        V_full = exp(-seasonal_hom_params.δ * d_star) * Vtilde_full
+
+        # V from the converged Fourier series
+        V_fourier = fourier_eval(t, V_coeffs)
+
+        # Ṽ from the converged Fourier series
+        Vtilde_fourier = fourier_eval(t0_star, result.Vtilde_coeffs)
+
+        V_err = abs(V_full - V_fourier) / abs(V_fourier)
+        Vtilde_err = abs(Vtilde_full - Vtilde_fourier) / abs(Vtilde_fourier)
+
+        max_V_error = max(max_V_error, V_err)
+        max_Vtilde_error = max(max_Vtilde_error, Vtilde_err)
+    end
+
+    println("  Max relative error in Ṽ (full Bellman vs Fourier): $(round(max_Vtilde_error * 100; digits=6))%")
+    println("  Max relative error in V (full Bellman vs Fourier):  $(round(max_V_error * 100; digits=6))%")
+
+    @test max_Vtilde_error < 1e-4
+    @test max_V_error < 1e-4
+end
+
+# ──────────────────────────────────────────────────────────────────────────
+@testset "Fixed-point consistency: seasonal parameters" begin
+    # Same check as above but with the full seasonal parameters (non-constant
+    # λ, m, k). This is the case where V(s) genuinely varies over the cycle,
+    # so the f/g decomposition's approximation is non-trivial.
+
+    seasonal_p = merge(default_params, (
+        γ     = 0.1,
+        Y_MIN = 1000.0,
+    ))
+
+    println("  Running seasonal solver (seasonal params) for fixed-point check...")
+    result = solve_seasonal_model(seasonal_p;
+        N        = 10,
+        max_iter = 200,
+        tol      = 1e-4,
+        damping  = 0.5,
+        verbose  = false,
+    )
+    @test result.converged
+    println("  Converged in $(result.iterations) iterations")
+
+    nodes = result.nodes
+    V_coeffs = result.V_coeffs
+    τ_star_coeffs = result.τ_star_coeffs
+
+    println("  Recomputing Ṽ(t₀) via full Bellman at $(length(nodes)) nodes...")
+    max_V_error = 0.0
+    max_Vtilde_error = 0.0
+
+    for (i, t) in enumerate(nodes)
+        d_star = result.d_values[i]
+        t0_star = t + d_star
+        τ_star = fourier_eval(t0_star, τ_star_coeffs)
+        T_star = t0_star + τ_star
+
+        # Full Bellman Ṽ: evaluates V(s) inside the loss integral at every s
+        Vtilde_full = compute_Vtilde(t0_star, T_star, V_coeffs, seasonal_p)
+
+        # V from full Bellman via value linkage
+        V_full = exp(-seasonal_p.δ * d_star) * Vtilde_full
+
+        # V from the converged Fourier series
+        V_fourier = fourier_eval(t, V_coeffs)
+
+        # Ṽ from the converged Fourier series
+        Vtilde_fourier = fourier_eval(t0_star, result.Vtilde_coeffs)
+
+        V_err = abs(V_full - V_fourier) / abs(V_fourier)
+        Vtilde_err = abs(Vtilde_full - Vtilde_fourier) / abs(Vtilde_fourier)
+
+        max_V_error = max(max_V_error, V_err)
+        max_Vtilde_error = max(max_Vtilde_error, Vtilde_err)
+    end
+
+    println("  Max relative error in Ṽ (full Bellman vs Fourier): $(round(max_Vtilde_error * 100; digits=6))%")
+    println("  Max relative error in V (full Bellman vs Fourier):  $(round(max_V_error * 100; digits=6))%")
+
+    # The f/g decomposition approximates ∫ S·λ·e^{-δs}·V(s) ds ≈ g·V(T*),
+    # so with seasonal V(s) there is a non-zero discrepancy. These tolerances
+    # confirm the approximation error is small (< 1% for both Ṽ and V).
+    @test max_Vtilde_error < 0.01
+    @test max_V_error < 0.01
 end
 
 # ══════════════════════════════════════════════════════════════════════════════

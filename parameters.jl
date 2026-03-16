@@ -14,11 +14,11 @@ const N_HARMONICS = 2
 # Coefficient vectors have length N_HARMONICS.
 
 # Catastrophic hazard rate λ(t)
-#   exp(a0) ≈ 0.00015 events/day ≈ 0.055 events/year
+#   exp(a0) ≈ 0.00025 events/day ≈ 0.091 events/year
 const λ_coeffs = (
-    a0 = log(0.00015),                       # baseline log-hazard
-    a  = [0.3, 0.0],                         # sine coefficients
-    b  = [0.2, 0.0],                         # cosine coefficients
+    a0 = log(0.00025),                       # baseline log-hazard
+    a  = [1.8, 0.0],                         # sine coefficients
+    b  = [1.2, 0.0],                         # cosine coefficients
 )
 
 # Natural (background) mortality rate m(t) on fish numbers
@@ -54,7 +54,7 @@ const s   = 100.0         # sigmoid scale parameter (g) — controls steepness
 const c_s = 5000.0      # stocking cost (paid at t₀)
 const c_h = 2000.0      # harvest cost (paid at T)
 const c₂  = 3000.0      # clearing cost (paid at loss event)
-const η   = 0.01        # feed cost rate (fraction of stock value per day)
+const η   = 0.001       # feed cost rate (currency per gram of biomass per day)
 
 # ── Insurance ─────────────────────────────────────────────────────────────────
 const c_I   = 50.0      # administrative cost component in premium
