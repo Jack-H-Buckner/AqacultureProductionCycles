@@ -18,24 +18,19 @@ include(joinpath(@__DIR__, "..", "src", "01_homogeneous_case.jl"))
 
 # ── Scenario definitions ──────────────────────────────────────────────────────
 
+# Only λ varies across scenarios; m and k use baseline values from parameters.jl
 scenarios = [
     (
         name = "baseline",
-        λ_coeffs = (a0 = log(0.00025), a = [1.8, 0.0], b = [1.2, 0.0]),
-        m_coeffs = (a0 = log(0.0002),  a = [0.2, 0.0], b = [0.1, 0.0]),
-        k_coeffs = (a0 = log(0.004),   a = [0.4, 0.0], b = [0.3, 0.0]),
+        λ_coeffs = λ_coeffs,
     ),
     (
         name = "medium_risk",
-        λ_coeffs = (a0 = log(0.0005),  a = [2.4, 0.25], b = [1.6, 0.15]),
-        m_coeffs = (a0 = log(0.0003),  a = [0.35, 0.05], b = [0.2, 0.025]),
-        k_coeffs = (a0 = log(0.004),   a = [0.6, 0.1],  b = [0.45, 0.05]),
+        λ_coeffs = λ_medium_coeffs,
     ),
     (
         name = "high_risk",
-        λ_coeffs = (a0 = log(0.00075), a = [3.0, 0.5],  b = [2.0, 0.3]),
-        m_coeffs = (a0 = log(0.0004),  a = [0.5, 0.1],  b = [0.3, 0.05]),
-        k_coeffs = (a0 = log(0.004),   a = [0.8, 0.2],  b = [0.6, 0.1]),
+        λ_coeffs = λ_high_coeffs,
     ),
 ]
 
@@ -45,7 +40,7 @@ function scale_seasonal_params(p, α)
     scale_coeffs(c) = (a0 = c.a0, a = α .* c.a, b = α .* c.b)
     return merge(p, (
         λ_coeffs = scale_coeffs(p.λ_coeffs),
-        m_coeffs = scale_coeffs(p.m_coeffs),
+        m_coeffs = scale_coeffs(p.m_coeffs),  # scales all rates for homotopy
         k_coeffs = scale_coeffs(p.k_coeffs),
     ))
 end
@@ -59,8 +54,6 @@ all_param_dfs = DataFrame[]
 for sc in scenarios
     p_sc = merge(default_params, (
         λ_coeffs = sc.λ_coeffs,
-        m_coeffs = sc.m_coeffs,
-        k_coeffs = sc.k_coeffs,
     ))
     df = DataFrame(
         t        = collect(days),
@@ -86,20 +79,16 @@ homotopy_steps = [0.25, 0.5, 0.75, 1.0]
 all_grid_dfs = DataFrame[]
 
 for sc in scenarios
-    # Build parameter set for this scenario
+    # Build parameter set — only λ differs from baseline
     p_seasonal = merge(default_params, (
         λ_coeffs = sc.λ_coeffs,
-        m_coeffs = sc.m_coeffs,
-        k_coeffs = sc.k_coeffs,
         γ        = 0.5,
         Y_MIN    = 0.0,
     ))
 
-    # Homogeneous warm start for this scenario
+    # Homogeneous warm start — only λ_const differs
     p_hom = merge(homogeneous_params, (
         λ_const = exp(sc.λ_coeffs.a0),
-        m_const = exp(sc.m_coeffs.a0),
-        k_const = exp(sc.k_coeffs.a0),
         γ       = 0.5,
         Y_MIN   = 0.0,
     ))

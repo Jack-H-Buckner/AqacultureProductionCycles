@@ -75,6 +75,22 @@ const SEED = 5491
 # Collect everything into a single NamedTuple for passing to model functions
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ── Risk scenario λ coefficients ─────────────────────────────────────────────
+# Only the catastrophic hazard rate varies across scenarios.
+# Mortality (m) and growth (k) use the baseline coefficients above.
+
+const λ_medium_coeffs = (
+    a0 = log(0.0005),           # 2× baseline: ~0.182 events/year
+    a  = [2.4, 0.25],           # stronger seasonal swing
+    b  = [1.6, 0.15],
+)
+
+const λ_high_coeffs = (
+    a0 = log(0.00075),          # 3× baseline: ~0.274 events/year
+    a  = [3.0, 0.5],            # strongest seasonal swing
+    b  = [2.0, 0.3],
+)
+
 # ── Homogeneous (constant) rates ──────────────────────────────────────────────
 # Scalar equivalents of the seasonal functions, set to exp(a0) (the mean
 # of each positive-periodic function when higher harmonics are zero).

@@ -1,8 +1,8 @@
 """
     high_risk_seasonal.jl
 
-High-risk, high-seasonality scenario. Increases the catastrophic hazard rate
-baseline and amplifies seasonal variation in all three rate functions (λ, m, k).
+High-risk scenario. Increases the catastrophic hazard rate λ while keeping
+mortality (m) and growth (k) at baseline values.
 
 Runs both optimal fallow and forced no-fallow (d*=0) cases and exports:
 - `high_risk_seasonal_grid.csv`    — fine-grid evaluation for both cases
@@ -17,31 +17,11 @@ include(joinpath(@__DIR__, "..", "src", "03_continuation_value_solver.jl"))
 include(joinpath(@__DIR__, "..", "src", "01_homogeneous_case.jl"))
 
 # ── High-risk seasonal parameters ─────────────────────────────────────────────
-# Triple the catastrophic hazard baseline and double the seasonal amplitudes
-# for all rates to create strong seasonal risk variation.
-
-high_risk_λ = (
-    a0 = log(0.00075),     # 3× baseline: ~0.274 events/year
-    a  = [3.0, 0.5],       # strong seasonal swing
-    b  = [2.0, 0.3],
-)
-
-high_risk_m = (
-    a0 = log(0.0004),      # 2× baseline mortality
-    a  = [0.5, 0.1],       # stronger seasonal amplitude
-    b  = [0.3, 0.05],
-)
-
-high_risk_k = (
-    a0 = log(0.004),       # same baseline growth
-    a  = [0.8, 0.2],       # stronger seasonal growth variation
-    b  = [0.6, 0.1],
-)
+# Only the catastrophic hazard rate differs from baseline.
+# Mortality (m) and growth (k) use baseline values from parameters.jl.
 
 high_risk_params = merge(default_params, (
-    λ_coeffs = high_risk_λ,
-    m_coeffs = high_risk_m,
-    k_coeffs = high_risk_k,
+    λ_coeffs = λ_high_coeffs,
     γ        = 0.5,
     Y_MIN    = 0.0,
 ))
@@ -79,9 +59,7 @@ end
 # ── Warm start from homogeneous solution ──────────────────────────────────────
 
 high_risk_hom = merge(homogeneous_params, (
-    λ_const = exp(high_risk_λ.a0),
-    m_const = exp(high_risk_m.a0),
-    k_const = exp(high_risk_k.a0),
+    λ_const = exp(λ_high_coeffs.a0),
     γ       = 0.5,
     Y_MIN   = 0.0,
 ))

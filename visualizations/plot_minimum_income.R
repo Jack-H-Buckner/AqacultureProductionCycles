@@ -14,18 +14,21 @@ scalars <- read.csv("results/simulations/minimum_income_scalars.csv")
 outdir <- "results/figures"
 dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
 
-Y_MIN_val <- round(scalars$Y_MIN_target, 0)
-Y_H_val   <- round(scalars$Y_H_hom, 0)
+Y_MIN_5  <- round(scalars$Y_MIN_5pct, 0)
+Y_MIN_10 <- round(scalars$Y_MIN_10pct, 0)
+Y_H_val  <- round(scalars$Y_H_hom, 0)
 
 # ── Labels ────────────────────────────────────────────────────────────────────
 ymin_labels <- c(
-  "ymin_zero"     = "Y_MIN = 0 (break-even)",
-  "ymin_positive" = paste0("Y_MIN = ", Y_MIN_val, " (5% of Y_H)")
+  "ymin_zero"  = "Y_MIN = 0 (break-even)",
+  "ymin_5pct"  = paste0("Y_MIN = ", Y_MIN_5, " (5% of Y_H)"),
+  "ymin_10pct" = paste0("Y_MIN = ", Y_MIN_10, " (10% of Y_H)")
 )
 
 grid$ymin_label <- factor(ymin_labels[grid$ymin_case],
   levels = c("Y_MIN = 0 (break-even)",
-             paste0("Y_MIN = ", Y_MIN_val, " (5% of Y_H)")))
+             paste0("Y_MIN = ", Y_MIN_5, " (5% of Y_H)"),
+             paste0("Y_MIN = ", Y_MIN_10, " (10% of Y_H)")))
 
 grid$fallow_label <- factor(
   ifelse(grid$fallow == "optimal_fallow", "Optimal fallow", "No fallow (d* = 0)"),
@@ -34,7 +37,8 @@ grid$fallow_label <- factor(
 
 ymin_colors <- c(
   "Y_MIN = 0 (break-even)" = "steelblue",
-  setNames("firebrick", paste0("Y_MIN = ", Y_MIN_val, " (5% of Y_H)"))
+  setNames("firebrick", paste0("Y_MIN = ", Y_MIN_5, " (5% of Y_H)")),
+  setNames("darkgreen", paste0("Y_MIN = ", Y_MIN_10, " (10% of Y_H)"))
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -78,15 +82,17 @@ cat("Saved minimum_income_params.png\n")
 grid$group <- interaction(grid$ymin_label, grid$fallow_label, sep = " \u2014 ")
 
 group_colors <- setNames(
-  c("steelblue", "steelblue4", "firebrick", "firebrick4"),
+  c("steelblue", "steelblue4", "firebrick", "firebrick4", "darkgreen", "darkgreen"),
   c(paste0("Y_MIN = 0 (break-even) \u2014 Optimal fallow"),
     paste0("Y_MIN = 0 (break-even) \u2014 No fallow (d* = 0)"),
-    paste0("Y_MIN = ", Y_MIN_val, " (5% of Y_H) \u2014 Optimal fallow"),
-    paste0("Y_MIN = ", Y_MIN_val, " (5% of Y_H) \u2014 No fallow (d* = 0)"))
+    paste0("Y_MIN = ", Y_MIN_5, " (5% of Y_H) \u2014 Optimal fallow"),
+    paste0("Y_MIN = ", Y_MIN_5, " (5% of Y_H) \u2014 No fallow (d* = 0)"),
+    paste0("Y_MIN = ", Y_MIN_10, " (10% of Y_H) \u2014 Optimal fallow"),
+    paste0("Y_MIN = ", Y_MIN_10, " (10% of Y_H) \u2014 No fallow (d* = 0)"))
 )
 
 group_lines <- setNames(
-  c("solid", "dashed", "solid", "dashed"),
+  c("solid", "dashed", "solid", "dashed", "solid", "dashed"),
   names(group_colors)
 )
 
@@ -204,13 +210,13 @@ p3_foc <- ggplot(foc_long, aes(x = t, y = value, color = group, linetype = group
   )
 
 ggsave(file.path(outdir, "minimum_income_tau.png"), p3_tau,
-       width = 12, height = 10, dpi = 400)
+       width = 12, height = 14, dpi = 400)
 cat("Saved minimum_income_tau.png\n")
 
 ggsave(file.path(outdir, "minimum_income_d.png"), p3_d,
-       width = 12, height = 10, dpi = 400)
+       width = 12, height = 14, dpi = 400)
 cat("Saved minimum_income_d.png\n")
 
 ggsave(file.path(outdir, "minimum_income_foc.png"), p3_foc,
-       width = 12, height = 10, dpi = 400)
+       width = 12, height = 14, dpi = 400)
 cat("Saved minimum_income_foc.png\n")

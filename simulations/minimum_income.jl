@@ -1,9 +1,9 @@
 """
     minimum_income.jl
 
-Compare medium-risk scenario with Y_MIN = 0 (break-even coverage) against
-Y_MIN = 25% of the per-rotation harvest income in the homogeneous case.
-Both cases run with optimal fallow and forced no-fallow (d*=0).
+Compare medium-risk scenario across insurance coverage levels:
+Y_MIN = 0 (break-even), 5% of Y_H, and 10% of Y_H.
+Each case runs with both optimal fallow and forced no-fallow (d*=0).
 
 Outputs:
 - `minimum_income_grid.csv`   — fine-grid evaluation for all cases
@@ -17,17 +17,11 @@ include(joinpath(@__DIR__, "..", "parameters.jl"))
 include(joinpath(@__DIR__, "..", "src", "03_continuation_value_solver.jl"))
 include(joinpath(@__DIR__, "..", "src", "01_homogeneous_case.jl"))
 
-# ── Medium-risk scenario parameters (same as risk_scenarios.jl) ─────────────
-medium_risk_λ = (a0 = log(0.0005),  a = [2.4, 0.25], b = [1.6, 0.15])
-medium_risk_m = (a0 = log(0.0003),  a = [0.35, 0.05], b = [0.2, 0.025])
-medium_risk_k = (a0 = log(0.004),   a = [0.6, 0.1],  b = [0.45, 0.05])
-
-# ── Compute homogeneous per-rotation harvest income ─────────────────────────
+# ── Medium-risk scenario parameters (from parameters.jl) ─────────────────────
+# Only λ differs from baseline; m and k use baseline values.
 
 p_hom_base = merge(homogeneous_params, (
-    λ_const = exp(medium_risk_λ.a0),
-    m_const = exp(medium_risk_m.a0),
-    k_const = exp(medium_risk_k.a0),
+    λ_const = exp(λ_medium_coeffs.a0),
     γ       = 0.5,
     Y_MIN   = 0.0,
 ))
@@ -42,8 +36,10 @@ println("  T*    = $(round(T_hom; digits=1)) days")
 println("  V*    = $(round(V_hom; digits=0))")
 println("  Y_H   = $(round(Y_H_hom; digits=0))")
 
-Y_MIN_target = 0.05 * Y_H_hom
-println("  Y_MIN = 0.05 × Y_H = $(round(Y_MIN_target; digits=0))")
+Y_MIN_5pct  = 0.05 * Y_H_hom
+Y_MIN_10pct = 0.10 * Y_H_hom
+println("  Y_MIN (5%)  = $(round(Y_MIN_5pct; digits=0))")
+println("  Y_MIN (10%) = $(round(Y_MIN_10pct; digits=0))")
 
 # ── Export seasonal parameter curves ────────────────────────────────────────
 
@@ -51,9 +47,7 @@ println("\nExporting seasonal parameter curves...")
 days = 0:364
 
 p_seasonal_base = merge(default_params, (
-    λ_coeffs = medium_risk_λ,
-    m_coeffs = medium_risk_m,
-    k_coeffs = medium_risk_k,
+    λ_coeffs = λ_medium_coeffs,
     γ        = 0.5,
     Y_MIN    = 0.0,
 ))
@@ -75,7 +69,8 @@ scalars_df = DataFrame(
     T_hom   = [T_hom],
     V_hom   = [V_hom],
     Y_H_hom = [Y_H_hom],
-    Y_MIN_target = [Y_MIN_target],
+    Y_MIN_5pct  = [Y_MIN_5pct],
+    Y_MIN_10pct = [Y_MIN_10pct],
 )
 CSV.write(joinpath(outdir, "minimum_income_scalars.csv"), scalars_df)
 println("Wrote minimum_income_scalars.csv")
@@ -98,25 +93,22 @@ homotopy_steps = [0.25, 0.5, 0.75, 1.0]
 all_grid_dfs = DataFrame[]
 
 scenarios = [
-    (name = "ymin_zero",     Y_MIN_val = 0.0),
-    (name = "ymin_positive", Y_MIN_val = Y_MIN_target),
+    (name = "ymin_zero",  Y_MIN_val = 0.0),
+    (name = "ymin_5pct",  Y_MIN_val = Y_MIN_5pct),
+    (name = "ymin_10pct", Y_MIN_val = Y_MIN_10pct),
 ]
 
 for sc in scenarios
-    # Build seasonal parameter set
+    # Build seasonal parameter set — only λ differs from baseline
     p_seasonal = merge(default_params, (
-        λ_coeffs = medium_risk_λ,
-        m_coeffs = medium_risk_m,
-        k_coeffs = medium_risk_k,
+        λ_coeffs = λ_medium_coeffs,
         γ        = 0.5,
         Y_MIN    = sc.Y_MIN_val,
     ))
 
     # Homogeneous warm start with this Y_MIN
     p_hom = merge(homogeneous_params, (
-        λ_const = exp(medium_risk_λ.a0),
-        m_const = exp(medium_risk_m.a0),
-        k_const = exp(medium_risk_k.a0),
+        λ_const = exp(λ_medium_coeffs.a0),
         γ       = 0.5,
         Y_MIN   = sc.Y_MIN_val,
     ))
