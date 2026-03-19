@@ -60,6 +60,8 @@ const η   = 0.001       # feed cost rate (currency per gram of biomass per day)
 const c_I   = 50.0      # administrative cost component in premium
 const Q     = 0.10      # insurer profit margin
 const Y_MIN = 0.0       # minimum-income margin (0 = break-even coverage)
+const ξ     = 0.0       # opportunity-cost coverage fraction ∈ [0,1]
+                        # ξ=0 recovers the baseline (cost-only) indemnity
 
 # ── Discounting ───────────────────────────────────────────────────────────────
 const δ   = 0.05 / 365  # daily discount rate
@@ -121,6 +123,7 @@ const default_params = (
     c_I   = c_I,
     Q     = Q,
     Y_MIN = Y_MIN,
+    ξ     = ξ,
     # discounting
     δ   = δ,
     δ_b = δ_b,
@@ -157,6 +160,7 @@ const homogeneous_params = (
     c_I   = c_I,
     Q     = Q,
     Y_MIN = Y_MIN,
+    ξ     = ξ,
     # discounting
     δ   = δ,
     δ_b = δ_b,
